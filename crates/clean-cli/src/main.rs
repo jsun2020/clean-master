@@ -1,3 +1,4 @@
+mod analyze;
 mod fmt;
 
 use clap::{Parser, Subcommand};
@@ -34,6 +35,18 @@ enum Cmd {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+    /// Show where the space went, based on the last scan session
+    Analyze {
+        /// Session file produced by `clean scan`
+        #[arg(long, short, default_value = clean_core::session::DEFAULT_SESSION_FILE)]
+        session: PathBuf,
+        /// Rows per table
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+        /// Show only one section
+        #[arg(long, value_enum)]
+        by: Option<analyze::Section>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -44,6 +57,7 @@ fn main() -> ExitCode {
             excludes,
             output,
         } => cmd_scan(path, excludes, output),
+        Cmd::Analyze { session, top, by } => cmd_analyze(session, top, by),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -85,5 +99,17 @@ fn cmd_scan(path: PathBuf, excludes: Vec<String>, output: Option<PathBuf>) -> Re
     println!("  session:  {}", output.display());
     println!();
     println!("Next: `clean analyze` to see where the space went.");
+    Ok(())
+}
+
+fn cmd_analyze(
+    session_path: PathBuf,
+    top: usize,
+    by: Option<analyze::Section>,
+) -> Result<(), String> {
+    let session = Session::load(&session_path).map_err(|e| {
+        format!("{e}\nHint: run `clean scan <path>` first to create a session file.")
+    })?;
+    analyze::run(&session, top, by);
     Ok(())
 }

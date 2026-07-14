@@ -3,6 +3,7 @@
 //! Contains no terminal I/O. The CLI (and the future GUI) consume this crate.
 
 pub mod error;
+pub mod report;
 pub mod scanner;
 pub mod session;
 pub mod types;
