@@ -1,4 +1,5 @@
 mod analyze;
+mod dupes_cmd;
 mod fmt;
 mod junk;
 
@@ -50,6 +51,20 @@ enum Cmd {
     },
     /// Find junk files in known-safe locations (dry run by default)
     Junk,
+    /// Find duplicate files under a path (dry run by default)
+    Dupes {
+        /// Root to search for duplicates
+        path: PathBuf,
+        /// Ignore files smaller than this many bytes
+        #[arg(long = "min-size", default_value_t = clean_core::dupes::DEFAULT_MIN_SIZE)]
+        min_size: u64,
+        /// Directory to prefer when choosing which copy to keep (repeatable, highest priority first)
+        #[arg(long = "keep-priority")]
+        keep_priority: Vec<String>,
+        /// Max groups to display
+        #[arg(long, default_value_t = 20)]
+        top: usize,
+    },
     /// Inspect the built-in junk rules
     Rules {
         #[command(subcommand)]
@@ -76,6 +91,17 @@ fn main() -> ExitCode {
             junk::run_dry();
             Ok(())
         }
+        Cmd::Dupes {
+            path,
+            min_size,
+            keep_priority,
+            top,
+        } => dupes_cmd::run_dry(&dupes_cmd::DupesArgs {
+            path,
+            min_size,
+            keep_priority,
+            top,
+        }),
         Cmd::Rules { cmd: RulesCmd::List } => {
             junk::list_rules();
             Ok(())

@@ -11,6 +11,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 globset.workspace = true
 jwalk.workspace = true
+blake3.workspace = true
+rayon = "1"
 
 [dev-dependencies]
 tempfile.workspace = true
