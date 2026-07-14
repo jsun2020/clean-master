@@ -80,7 +80,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("x.txt"), b"abc").unwrap();
         let outcome = WalkBackend
-            .scan(dir.path(), &ScanOptions::default(), &mut |_| {})
+            .scan(dir.path(), &ScanOptions::default(), &|_| {})
             .unwrap();
         let session = Session::from_scan(dir.path(), outcome);
 

@@ -1,7 +1,10 @@
 use crate::error::CoreError;
 use crate::types::{systime_to_unix, FileRecord, SkippedPath};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use std::path::Path;
+use rayon::prelude::*;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Default)]
 pub struct ScanOptions {
@@ -23,11 +26,15 @@ pub trait ScanBackend {
         &self,
         root: &Path,
         opts: &ScanOptions,
-        progress: &mut dyn FnMut(u64),
+        progress: &(dyn Fn(u64) + Sync),
     ) -> Result<ScanOutcome, CoreError>;
 }
 
-/// Parallel directory traversal backend (jwalk/rayon).
+/// Rayon-parallel recursive directory walker.
+///
+/// Uses `std::fs::DirEntry::metadata()`, which on Windows is served from the
+/// directory enumeration itself - no per-file open. (A per-file stat syscall
+/// is catastrophically slow under corporate endpoint-protection hooks.)
 /// Never follows symlinks, junctions, or other reparse points.
 pub struct WalkBackend;
 
@@ -53,105 +60,140 @@ fn build_globset(patterns: &[String]) -> Result<Option<GlobSet>, CoreError> {
     Ok(Some(set))
 }
 
+struct WalkCtx<'a> {
+    excludes: Option<GlobSet>,
+    sink: Mutex<ScanOutcome>,
+    seen: AtomicU64,
+    progress: &'a (dyn Fn(u64) + Sync),
+}
+
+fn walk_dir(dir: &Path, ctx: &WalkCtx) {
+    let read = match std::fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(e) => {
+            ctx.sink.lock().unwrap().skipped.push(SkippedPath {
+                path: dir.display().to_string(),
+                reason: e.to_string(),
+            });
+            return;
+        }
+    };
+
+    let mut records: Vec<FileRecord> = Vec::new();
+    let mut skipped: Vec<SkippedPath> = Vec::new();
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+
+    for entry in read {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                skipped.push(SkippedPath {
+                    path: dir.display().to_string(),
+                    reason: e.to_string(),
+                });
+                continue;
+            }
+        };
+        let path = entry.path();
+        if let Some(set) = &ctx.excludes {
+            if set.is_match(&path) {
+                continue;
+            }
+        }
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(e) => {
+                skipped.push(SkippedPath {
+                    path: path.display().to_string(),
+                    reason: e.to_string(),
+                });
+                continue;
+            }
+        };
+        // Skip reparse points entirely: following a junction would loop or
+        // double-count; recording it as a dir would misattribute sizes.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                skipped.push(SkippedPath {
+                    path: path.display().to_string(),
+                    reason: e.to_string(),
+                });
+                continue;
+            }
+        };
+
+        let is_dir = file_type.is_dir();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let ext = if is_dir {
+            None
+        } else {
+            path.extension().map(|e| e.to_string_lossy().to_lowercase())
+        };
+
+        #[cfg(windows)]
+        let attributes = {
+            use std::os::windows::fs::MetadataExt;
+            meta.file_attributes()
+        };
+        #[cfg(not(windows))]
+        let attributes = 0u32;
+
+        records.push(FileRecord {
+            id: 0, // renumbered once after the walk
+            path: path.display().to_string(),
+            name,
+            ext,
+            size: if is_dir { 0 } else { meta.len() },
+            created: systime_to_unix(meta.created()),
+            modified: systime_to_unix(meta.modified()),
+            accessed: systime_to_unix(meta.accessed()),
+            is_dir,
+            attributes,
+        });
+        if is_dir {
+            subdirs.push(path);
+        }
+    }
+
+    let batch = records.len() as u64;
+    {
+        let mut sink = ctx.sink.lock().unwrap();
+        sink.records.append(&mut records);
+        sink.skipped.append(&mut skipped);
+    }
+    let seen = ctx.seen.fetch_add(batch, Ordering::Relaxed) + batch;
+    (ctx.progress)(seen);
+
+    subdirs.par_iter().for_each(|d| walk_dir(d, ctx));
+}
+
 impl ScanBackend for WalkBackend {
     fn scan(
         &self,
         root: &Path,
         opts: &ScanOptions,
-        progress: &mut dyn FnMut(u64),
+        progress: &(dyn Fn(u64) + Sync),
     ) -> Result<ScanOutcome, CoreError> {
         if !root.exists() {
             return Err(CoreError::InvalidRoot(root.display().to_string()));
         }
-        let excludes = build_globset(&opts.excludes)?;
-
-        let mut outcome = ScanOutcome::default();
-        let mut next_id: u64 = 0;
-        let mut seen: u64 = 0;
-
-        let walker = jwalk::WalkDir::new(root)
-            .skip_hidden(false)
-            .follow_links(false);
-
-        for entry in walker {
-            seen += 1;
-            if seen % 512 == 0 {
-                progress(seen);
-            }
-            let entry = match entry {
-                Ok(e) => e,
-                Err(e) => {
-                    outcome.skipped.push(SkippedPath {
-                        path: e
-                            .path()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_default(),
-                        reason: e.to_string(),
-                    });
-                    continue;
-                }
-            };
-            let path = entry.path();
-            if path == root {
-                continue;
-            }
-            if let Some(set) = &excludes {
-                if set.is_match(&path) {
-                    continue;
-                }
-            }
-
-            let file_type = entry.file_type();
-            // Do not record reparse points / symlinks; jwalk (follow_links=false)
-            // already refuses to descend into them, and treating a junction as a
-            // real directory would double-count content in reports.
-            if file_type.is_symlink() {
-                continue;
-            }
-
-            let meta = match entry.metadata() {
-                Ok(m) => m,
-                Err(e) => {
-                    outcome.skipped.push(SkippedPath {
-                        path: path.display().to_string(),
-                        reason: e.to_string(),
-                    });
-                    continue;
-                }
-            };
-
-            let is_dir = file_type.is_dir();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let ext = if is_dir {
-                None
-            } else {
-                path.extension()
-                    .map(|e| e.to_string_lossy().to_lowercase())
-            };
-
-            #[cfg(windows)]
-            let attributes = {
-                use std::os::windows::fs::MetadataExt;
-                meta.file_attributes()
-            };
-            #[cfg(not(windows))]
-            let attributes = 0u32;
-
-            outcome.records.push(FileRecord {
-                id: next_id,
-                path: path.display().to_string(),
-                name,
-                ext,
-                size: if is_dir { 0 } else { meta.len() },
-                created: systime_to_unix(meta.created()),
-                modified: systime_to_unix(meta.modified()),
-                accessed: systime_to_unix(meta.accessed()),
-                is_dir,
-                attributes,
-            });
-            next_id += 1;
+        let ctx = WalkCtx {
+            excludes: build_globset(&opts.excludes)?,
+            sink: Mutex::new(ScanOutcome::default()),
+            seen: AtomicU64::new(0),
+            progress,
+        };
+        walk_dir(root, &ctx);
+        let mut outcome = ctx.sink.into_inner().unwrap();
+        // Deterministic order + sequential ids regardless of thread timing.
+        outcome.records.sort_by(|a, b| a.path.cmp(&b.path));
+        for (i, r) in outcome.records.iter_mut().enumerate() {
+            r.id = i as u64;
         }
-        progress(seen);
         Ok(outcome)
     }
 }
@@ -177,7 +219,7 @@ mod tests {
         let opts = ScanOptions {
             excludes: excludes.iter().map(|s| s.to_string()).collect(),
         };
-        WalkBackend.scan(root, &opts, &mut |_| {}).unwrap()
+        WalkBackend.scan(root, &opts, &|_| {}).unwrap()
     }
 
     #[test]
@@ -213,7 +255,6 @@ mod tests {
         let dir = fixture();
         let out = scan(dir.path(), &["*.log"]);
         assert!(out.records.iter().all(|r| r.name != "tmp.log"));
-        // everything else still present
         assert!(out.records.iter().any(|r| r.name == "blob.bin"));
     }
 
@@ -231,18 +272,34 @@ mod tests {
             .scan(
                 Path::new("Z:\\definitely\\missing\\root"),
                 &ScanOptions::default(),
-                &mut |_| {},
+                &|_| {},
             )
             .unwrap_err();
         matches!(err, CoreError::InvalidRoot(_));
     }
 
     #[test]
-    fn ids_are_sequential_and_unique() {
+    fn ids_are_sequential_and_order_deterministic() {
         let dir = fixture();
-        let out = scan(dir.path(), &[]);
-        for (i, r) in out.records.iter().enumerate() {
+        let out1 = scan(dir.path(), &[]);
+        let out2 = scan(dir.path(), &[]);
+        for (i, r) in out1.records.iter().enumerate() {
             assert_eq!(r.id, i as u64);
         }
+        let paths1: Vec<_> = out1.records.iter().map(|r| &r.path).collect();
+        let paths2: Vec<_> = out2.records.iter().map(|r| &r.path).collect();
+        assert_eq!(paths1, paths2);
+    }
+
+    #[test]
+    fn progress_reports_growing_counts() {
+        let dir = fixture();
+        let max_seen = AtomicU64::new(0);
+        WalkBackend
+            .scan(dir.path(), &ScanOptions::default(), &|n| {
+                max_seen.fetch_max(n, Ordering::Relaxed);
+            })
+            .unwrap();
+        assert_eq!(max_seen.load(Ordering::Relaxed), 7);
     }
 }

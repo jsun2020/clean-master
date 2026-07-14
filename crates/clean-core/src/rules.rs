@@ -168,7 +168,7 @@ pub fn evaluate_all(rules: &[JunkRule], now_unix: i64) -> Vec<RuleReport> {
         if !base_path.is_dir() {
             continue;
         }
-        let Ok(outcome) = WalkBackend.scan(base_path, &ScanOptions::default(), &mut |_| {}) else {
+        let Ok(outcome) = WalkBackend.scan(base_path, &ScanOptions::default(), &|_| {}) else {
             continue;
         };
         let Ok(findings) = evaluate_records(rule, base_path, &outcome.records, now_unix) else {
@@ -207,7 +207,7 @@ mod tests {
 
     fn scan_records(root: &Path) -> Vec<FileRecord> {
         WalkBackend
-            .scan(root, &ScanOptions::default(), &mut |_| {})
+            .scan(root, &ScanOptions::default(), &|_| {})
             .unwrap()
             .records
     }

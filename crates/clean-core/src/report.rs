@@ -27,7 +27,7 @@ pub struct AgeBucket {
 const DAY: i64 = 86_400;
 
 /// Largest files, descending by size.
-pub fn top_files<'a>(records: &'a [FileRecord], n: usize) -> Vec<&'a FileRecord> {
+pub fn top_files(records: &[FileRecord], n: usize) -> Vec<&FileRecord> {
     let mut files: Vec<&FileRecord> = records.iter().filter(|r| !r.is_dir).collect();
     files.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
     files.truncate(n);

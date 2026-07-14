@@ -14,9 +14,14 @@ pub fn collect_reports() -> Vec<RuleReport> {
     rules::evaluate_all(&rules::builtin_rules(), now_unix())
 }
 
-/// Dry-run report: what would be reclaimed, grouped by category.
-pub fn run_dry() {
-    println!("Scanning junk locations (dry run - nothing will be deleted)...");
+/// Report what would be (or is about to be) reclaimed, grouped by category.
+/// Returns the deletable targets and the rule bases they are authorized under.
+pub fn report(dry: bool) -> (Vec<(String, u64)>, Vec<std::path::PathBuf>) {
+    if dry {
+        println!("Scanning junk locations (dry run - nothing will be deleted)...");
+    } else {
+        println!("Scanning junk locations...");
+    }
     let reports = collect_reports();
 
     let mut t = Table::new();
@@ -42,7 +47,7 @@ pub fn run_dry() {
 
     if total_files == 0 {
         println!("No junk found in the known-safe locations. Nice and tidy.");
-        return;
+        return (Vec::new(), Vec::new());
     }
     println!("{t}");
     println!();
@@ -51,8 +56,21 @@ pub fn run_dry() {
         human_bytes(total_bytes),
         total_files
     );
-    println!("This was a DRY RUN. Nothing was deleted.");
-    println!("Use `clean rules list` to see why each location is considered safe.");
+    if dry {
+        println!("This was a DRY RUN. Nothing was deleted. Re-run with --apply to clean.");
+        println!("Use `clean rules list` to see why each location is considered safe.");
+    }
+
+    let bases: Vec<std::path::PathBuf> = reports
+        .iter()
+        .map(|r| std::path::PathBuf::from(&r.base))
+        .collect();
+    let targets: Vec<(String, u64)> = reports
+        .iter()
+        .flat_map(|r| r.findings.iter())
+        .map(|f| (f.record.path.clone(), f.record.size))
+        .collect();
+    (targets, bases)
 }
 
 /// `clean rules list`

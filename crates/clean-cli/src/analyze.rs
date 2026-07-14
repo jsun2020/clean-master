@@ -15,7 +15,7 @@ pub enum Section {
 fn table_with_header(headers: &[&str]) -> Table {
     let mut t = Table::new();
     t.load_preset(UTF8_FULL_CONDENSED);
-    t.set_header(headers.iter().map(|h| Cell::new(h)).collect::<Vec<_>>());
+    t.set_header(headers.iter().map(Cell::new).collect::<Vec<_>>());
     t
 }
 

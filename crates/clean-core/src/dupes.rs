@@ -190,7 +190,7 @@ mod tests {
 
     fn scan(root: &Path) -> Vec<FileRecord> {
         WalkBackend
-            .scan(root, &ScanOptions::default(), &mut |_| {})
+            .scan(root, &ScanOptions::default(), &|_| {})
             .unwrap()
             .records
     }

@@ -6,6 +6,7 @@ pub mod dupes;
 pub mod error;
 pub mod report;
 pub mod rules;
+pub mod safety;
 pub mod scanner;
 pub mod session;
 pub mod types;

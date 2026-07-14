@@ -19,7 +19,7 @@ pub fn find(args: &DupesArgs) -> Result<Vec<DupeGroup>, String> {
 
     bar.set_message("scanning...");
     let outcome = WalkBackend
-        .scan(&args.path, &ScanOptions::default(), &mut |seen| {
+        .scan(&args.path, &ScanOptions::default(), &|seen| {
             bar.set_message(format!("scanning... {seen} entries"));
         })
         .map_err(|e| e.to_string())?;
@@ -34,8 +34,26 @@ pub fn find(args: &DupesArgs) -> Result<Vec<DupeGroup>, String> {
     Ok(groups)
 }
 
-pub fn run_dry(args: &DupesArgs) -> Result<(), String> {
-    let groups = find(args)?;
+/// Deletable copies across all groups. Guards: the suggested keeper must
+/// still exist on disk (otherwise the whole group is skipped), and protected
+/// system paths are excluded.
+pub fn deletable_targets(groups: &[DupeGroup]) -> Vec<(String, u64)> {
+    let mut targets = Vec::new();
+    for g in groups {
+        let keeper = &g.members[g.suggested_keep];
+        if !std::path::Path::new(&keeper.path).is_file() {
+            continue; // keeper vanished since scan: do not touch this group
+        }
+        for m in g.deletable() {
+            if clean_core::safety::deletion_allowed(std::path::Path::new(&m.path), &[]) {
+                targets.push((m.path.clone(), m.size));
+            }
+        }
+    }
+    targets
+}
+
+pub fn print_report(args: &DupesArgs, groups: &[DupeGroup], dry: bool) -> Result<(), String> {
     if groups.is_empty() {
         println!(
             "No duplicates >= {} found under {}.",
@@ -75,6 +93,9 @@ pub fn run_dry(args: &DupesArgs) -> Result<(), String> {
         total_files,
         human_bytes(total_wasted)
     );
-    println!("This was a DRY RUN. Nothing was deleted. One copy of every group always survives.");
+    if dry {
+        println!("This was a DRY RUN. Nothing was deleted. Re-run with --apply to remove the redundant copies.");
+    }
+    println!("One copy of every group always survives.");
     Ok(())
 }

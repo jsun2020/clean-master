@@ -1,4 +1,5 @@
 mod analyze;
+mod apply;
 mod dupes_cmd;
 mod fmt;
 mod junk;
@@ -50,7 +51,14 @@ enum Cmd {
         by: Option<analyze::Section>,
     },
     /// Find junk files in known-safe locations (dry run by default)
-    Junk,
+    Junk {
+        /// Actually move the junk to the Recycle Bin (asks for confirmation)
+        #[arg(long)]
+        apply: bool,
+        /// Skip the confirmation prompt (for scripting)
+        #[arg(long, requires = "apply")]
+        yes: bool,
+    },
     /// Find duplicate files under a path (dry run by default)
     Dupes {
         /// Root to search for duplicates
@@ -64,6 +72,18 @@ enum Cmd {
         /// Max groups to display
         #[arg(long, default_value_t = 20)]
         top: usize,
+        /// Move the redundant copies to the Recycle Bin (asks for confirmation)
+        #[arg(long)]
+        apply: bool,
+        /// Skip the confirmation prompt (for scripting)
+        #[arg(long, requires = "apply")]
+        yes: bool,
+    },
+    /// Restore the files recycled by the last apply session
+    Undo {
+        /// Undo manifest file (default: newest clean-undo-*.json in the current directory)
+        #[arg(long)]
+        manifest: Option<PathBuf>,
     },
     /// Inspect the built-in junk rules
     Rules {
@@ -87,21 +107,25 @@ fn main() -> ExitCode {
             output,
         } => cmd_scan(path, excludes, output),
         Cmd::Analyze { session, top, by } => cmd_analyze(session, top, by),
-        Cmd::Junk => {
-            junk::run_dry();
-            Ok(())
-        }
+        Cmd::Junk { apply, yes } => cmd_junk(apply, yes),
         Cmd::Dupes {
             path,
             min_size,
             keep_priority,
             top,
-        } => dupes_cmd::run_dry(&dupes_cmd::DupesArgs {
-            path,
-            min_size,
-            keep_priority,
-            top,
-        }),
+            apply,
+            yes,
+        } => cmd_dupes(
+            dupes_cmd::DupesArgs {
+                path,
+                min_size,
+                keep_priority,
+                top,
+            },
+            apply,
+            yes,
+        ),
+        Cmd::Undo { manifest } => cmd_undo(manifest),
         Cmd::Rules { cmd: RulesCmd::List } => {
             junk::list_rules();
             Ok(())
@@ -128,7 +152,7 @@ fn cmd_scan(path: PathBuf, excludes: Vec<String>, output: Option<PathBuf>) -> Re
     let started = Instant::now();
     let opts = ScanOptions { excludes };
     let outcome = WalkBackend
-        .scan(&path, &opts, &mut |seen| {
+        .scan(&path, &opts, &|seen| {
             bar.set_message(format!("{seen} entries"));
         })
         .map_err(|e| e.to_string())?;
@@ -147,6 +171,53 @@ fn cmd_scan(path: PathBuf, excludes: Vec<String>, output: Option<PathBuf>) -> Re
     println!("  session:  {}", output.display());
     println!();
     println!("Next: `clean analyze` to see where the space went.");
+    Ok(())
+}
+
+fn cmd_junk(do_apply: bool, yes: bool) -> Result<(), String> {
+    let (targets, bases) = junk::report(!do_apply);
+    if !do_apply {
+        return Ok(());
+    }
+    // Junk findings are authorized only under their own rule bases.
+    let targets: Vec<(String, u64)> = targets
+        .into_iter()
+        .filter(|(p, _)| clean_core::safety::deletion_allowed(std::path::Path::new(p), &bases))
+        .collect();
+    apply::apply(targets, yes)
+}
+
+fn cmd_dupes(args: dupes_cmd::DupesArgs, do_apply: bool, yes: bool) -> Result<(), String> {
+    let groups = dupes_cmd::find(&args)?;
+    dupes_cmd::print_report(&args, &groups, !do_apply)?;
+    if !do_apply || groups.is_empty() {
+        return Ok(());
+    }
+    let targets = dupes_cmd::deletable_targets(&groups);
+    apply::apply(targets, yes)
+}
+
+fn cmd_undo(manifest: Option<PathBuf>) -> Result<(), String> {
+    use clean_core::safety::ActionManifest;
+    let path = match manifest {
+        Some(p) => p,
+        None => ActionManifest::latest_in(std::path::Path::new("."))
+            .ok_or("no clean-undo-*.json manifest found in the current directory")?,
+    };
+    let manifest = ActionManifest::load(&path).map_err(|e| e.to_string())?;
+    println!(
+        "Restoring {} files from manifest {}...",
+        manifest.actions.len(),
+        path.display()
+    );
+    let outcome = clean_core::safety::undo(&manifest).map_err(|e| e.to_string())?;
+    println!("Restored {} files from the Recycle Bin.", outcome.restored);
+    if outcome.missing > 0 {
+        println!(
+            "{} files were no longer in the Recycle Bin (emptied or restored earlier).",
+            outcome.missing
+        );
+    }
     Ok(())
 }
 
