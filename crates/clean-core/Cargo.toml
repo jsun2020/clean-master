@@ -1,0 +1,16 @@
+[package]
+name = "clean-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Engine library for CleanCLI: scanning, analysis, junk rules, duplicate detection, safety layer"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+globset.workspace = true
+jwalk.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
