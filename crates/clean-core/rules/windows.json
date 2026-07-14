@@ -1,0 +1,86 @@
+{
+  "pack": "windows-core",
+  "rules": [
+    {
+      "id": "win.user_temp",
+      "category": "temp",
+      "risk": "safe",
+      "rationale": "Per-user temporary directory; applications recreate contents as needed.",
+      "base": "%TEMP%",
+      "include": ["**"],
+      "min_age_days": 1
+    },
+    {
+      "id": "win.windows_temp",
+      "category": "temp",
+      "risk": "safe",
+      "rationale": "System temporary directory; contents are disposable (may require admin rights).",
+      "base": "%WINDIR%\\Temp",
+      "include": ["**"],
+      "min_age_days": 1
+    },
+    {
+      "id": "browser.chrome_cache",
+      "category": "cache",
+      "risk": "safe",
+      "rationale": "Chrome web cache; rebuilt automatically while browsing. Does not touch passwords, history or bookmarks.",
+      "base": "%LOCALAPPDATA%\\Google\\Chrome\\User Data",
+      "include": ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**", "*/GrShaderCache/**"],
+      "min_age_days": 1
+    },
+    {
+      "id": "browser.edge_cache",
+      "category": "cache",
+      "risk": "safe",
+      "rationale": "Edge web cache; rebuilt automatically while browsing. Does not touch passwords, history or favorites.",
+      "base": "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data",
+      "include": ["*/Cache/**", "*/Code Cache/**", "*/GPUCache/**", "*/GrShaderCache/**"],
+      "min_age_days": 1
+    },
+    {
+      "id": "browser.firefox_cache",
+      "category": "cache",
+      "risk": "safe",
+      "rationale": "Firefox web cache; rebuilt automatically while browsing. Profiles, logins and bookmarks are untouched.",
+      "base": "%LOCALAPPDATA%\\Mozilla\\Firefox\\Profiles",
+      "include": ["*/cache2/**", "*/startupCache/**"],
+      "min_age_days": 1
+    },
+    {
+      "id": "win.thumbnail_cache",
+      "category": "cache",
+      "risk": "safe",
+      "rationale": "Explorer thumbnail/icon caches; Windows regenerates them (files in use are skipped automatically).",
+      "base": "%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer",
+      "include": ["thumbcache_*.db", "iconcache_*.db"],
+      "min_age_days": 1
+    },
+    {
+      "id": "win.update_download_cache",
+      "category": "update_leftover",
+      "risk": "safe",
+      "rationale": "Already-downloaded Windows Update packages; Windows re-downloads anything it still needs (may require admin rights).",
+      "base": "%WINDIR%\\SoftwareDistribution\\Download",
+      "include": ["**"],
+      "min_age_days": 7
+    },
+    {
+      "id": "win.user_crash_dumps",
+      "category": "dumps",
+      "risk": "safe",
+      "rationale": "Per-user application crash dumps; only useful for debugging past crashes.",
+      "base": "%LOCALAPPDATA%\\CrashDumps",
+      "include": ["**"],
+      "min_age_days": 0
+    },
+    {
+      "id": "win.error_reports",
+      "category": "dumps",
+      "risk": "safe",
+      "rationale": "Windows Error Reporting queue and archive; reports of past crashes already handled or ignored.",
+      "base": "%LOCALAPPDATA%\\Microsoft\\Windows\\WER",
+      "include": ["ReportQueue/**", "ReportArchive/**", "Temp/**"],
+      "min_age_days": 7
+    }
+  ]
+}

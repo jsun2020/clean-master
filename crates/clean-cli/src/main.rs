@@ -1,5 +1,6 @@
 mod analyze;
 mod fmt;
+mod junk;
 
 use clap::{Parser, Subcommand};
 use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
@@ -47,6 +48,19 @@ enum Cmd {
         #[arg(long, value_enum)]
         by: Option<analyze::Section>,
     },
+    /// Find junk files in known-safe locations (dry run by default)
+    Junk,
+    /// Inspect the built-in junk rules
+    Rules {
+        #[command(subcommand)]
+        cmd: RulesCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// List all junk rules with location and safety rationale
+    List,
 }
 
 fn main() -> ExitCode {
@@ -58,6 +72,14 @@ fn main() -> ExitCode {
             output,
         } => cmd_scan(path, excludes, output),
         Cmd::Analyze { session, top, by } => cmd_analyze(session, top, by),
+        Cmd::Junk => {
+            junk::run_dry();
+            Ok(())
+        }
+        Cmd::Rules { cmd: RulesCmd::List } => {
+            junk::list_rules();
+            Ok(())
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

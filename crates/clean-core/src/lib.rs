@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod report;
+pub mod rules;
 pub mod scanner;
 pub mod session;
 pub mod types;
