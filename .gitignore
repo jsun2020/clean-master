@@ -2,3 +2,5 @@
 *.clean-session.json
 clean-session.json
 clean-undo-*.json
+prd.md
+crates/clean-gui/gen/

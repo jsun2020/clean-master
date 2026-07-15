@@ -1,7 +1,33 @@
-# CleanCLI (`clean`)
+# CleanCLI (`clean`) + Clean Master (GUI)
 
-Fast, safe, portable disk cleaning for Windows. Single ~3 MB exe, no install,
-no telemetry. See `prd.md` for the full product definition.
+Fast, safe, portable disk cleaning for Windows. No install, no telemetry.
+Two front ends over the same engine:
+
+- `clean.exe` - the CLI (~3 MB)
+- `clean-master.exe` - **Clean Master**, the desktop GUI (Tauri 2, single
+  portable exe; assets embedded, no WebView bundled - uses the system
+  WebView2 runtime present on Windows 10/11)
+
+See `prd.md` for the full product definition.
+
+## Clean Master (GUI)
+
+```
+cargo build --release -p clean-gui   # target/release/clean-master.exe
+```
+
+Three screens, same safety contract as the CLI:
+
+- **Junk Clean** - scans the built-in rule pack on launch (dry run), shows
+  every rule with its location, size and rationale; clean what you select.
+- **Duplicates** - pick a folder, full BLAKE3 verification, the KEEP copy is
+  marked and can never be deleted; opt groups in or out.
+- **Space Analyze** - largest files/folders, by type, by age. Read-only.
+- **Undo** - every clean writes a manifest to `%LOCALAPPDATA%\CleanMaster`;
+  the sidebar restores the last clean from the Recycle Bin in one click.
+
+The webview only ever selects rule ids / group indexes - deletion targets are
+re-derived and re-validated (protected roots, keeper-survives) in Rust.
 
 ## Quick start
 
@@ -32,12 +58,13 @@ clean rules list              # every junk rule + why it is safe
 ## Build
 
 ```
-cargo build --release        # target/release/clean.exe (~2.7 MB)
-cargo test                   # 30 unit tests
+cargo build --release        # target/release/clean.exe + clean-master.exe
+cargo test                   # unit tests
 ```
 
-Workspace layout: `crates/clean-core` is the engine library (no terminal I/O;
-the future GUI consumes it), `crates/clean-cli` is the thin CLI binary.
+Workspace layout: `crates/clean-core` is the engine library (no terminal
+I/O), `crates/clean-cli` is the thin CLI binary, `crates/clean-gui` is the
+Clean Master desktop app (static HTML/CSS/JS frontend, no Node toolchain).
 
 ## Measured performance (Win10, corporate EDR active)
 
