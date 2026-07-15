@@ -317,4 +317,19 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 
 .hint { color: var(--ink-3); text-align: center; padding: 40px 0; line-height: 1.6; }
+
+/* Post-apply notice: files still held open by running apps. */
+.banner {
+  display: flex; align-items: baseline; gap: 10px;
+  background: #fdf6e8;
+  border: 1px solid #ecd9ac;
+  border-left: 3px solid var(--amber);
+  border-radius: 10px;
+  padding: 11px 15px;
+  margin-bottom: 14px;
+  color: #6b511d;
+  line-height: 1.5;
+  animation: rise .3s both;
+}
+.banner b { color: #4c3a12; }
 button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(--emerald-hi); outline-offset: 2px; }
