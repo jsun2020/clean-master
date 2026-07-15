@@ -97,7 +97,7 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    ["junk", "dupes", "analyze"].forEach((v) => { $("view-" + v).hidden = v !== btn.dataset.view; });
+    ["junk", "dupes", "analyze", "dev"].forEach((v) => { $("view-" + v).hidden = v !== btn.dataset.view; });
   });
 });
 
@@ -110,6 +110,7 @@ listen("progress", (e) => {
   else if (stage === "dupe-scan") $("dupes-progress-label").textContent = "scanning - " + text;
   else if (stage === "dupe-hash") $("dupes-progress-label").textContent = "verifying content (BLAKE3)...";
   else if (stage === "analyze-scan") $("an-progress-label").textContent = "scanning - " + text;
+  else if (stage === "dev-scan") $("dev-progress-label").textContent = "scanning projects - " + fmtCount(seen) + " folders (sizing artifacts...)";
 });
 
 listen("apply-progress", (e) => {
@@ -482,6 +483,147 @@ function renderAnalyze(rep) {
 function shortRoot(p) {
   return p.length > 40 ? p.slice(0, 18) + "..." + p.slice(-18) : p;
 }
+
+// ---------------------------------------------------------- developer --
+
+const DEV_KIND_ICON = {
+  node_modules: "js", rust_target: "rs", maven_target: "mvn", gradle_build: "gr",
+  gradle_cache: "gr", python_venv: "py", dotnet_obj: "net", dotnet_bin: "net",
+};
+
+let devPath = null;
+let devReport = null;
+const devChecked = new Set(); // artifact indexes; empty by default (opt-in)
+
+$("btn-dev-browse").addEventListener("click", async () => {
+  const p = await invoke("pick_folder");
+  if (!p) return;
+  devPath = p;
+  const el = $("dev-path");
+  el.textContent = p; el.classList.add("set");
+  $("btn-dev-scan").disabled = false;
+});
+
+$("btn-dev-scan").addEventListener("click", async () => {
+  if (!devPath) return;
+  $("dev-progress").classList.add("on");
+  $("dev-progress").hidden = false;
+  $("dev-projects").innerHTML = "";
+  $("dev-summary").hidden = true;
+  $("dev-applybar").hidden = true;
+  $("btn-dev-scan").disabled = true;
+  try {
+    devReport = await invoke("dev_scan", { path: devPath });
+    devChecked.clear(); // nothing pre-selected: dev cleanup is always opt-in
+    renderDev();
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    $("dev-progress").classList.remove("on");
+    $("btn-dev-scan").disabled = false;
+  }
+});
+
+function renderDev() {
+  const rep = devReport;
+  if (!rep.project_count) {
+    $("dev-summary").hidden = true;
+    $("dev-projects").innerHTML =
+      '<div class="hint">No developer projects with reclaimable folders found under<br><b>' +
+      esc(rep.root) + '</b><br><br>Clean Master looks for node_modules, target, build, venvs and bin/obj that sit next to a project manifest.</div>';
+    $("dev-applybar").hidden = true;
+    return;
+  }
+  $("dev-hero").innerHTML = "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong> in build &amp; dependency folders";
+  $("dev-summary").hidden = false;
+  $("dev-summary").innerHTML =
+    '<div class="sum-item"><div class="k">Projects</div><div class="v">' + fmtCount(rep.project_count) + '</div></div>' +
+    '<div class="sum-item"><div class="k">Artifact folders</div><div class="v">' + fmtCount(rep.artifact_count) + '</div></div>' +
+    '<div class="sum-item"><div class="k">Reclaimable</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
+    (rep.truncated ? '<div class="sum-item"><div class="k">Showing</div><div class="v">top ' + rep.projects.length + '</div></div>' : "");
+
+  let html = "";
+  for (const p of rep.projects) {
+    html += '<div class="card"><div class="cat-head">' +
+      '<label class="chk"><input type="checkbox" data-proj="' + esc(p.root) + '"><span class="box"></span></label>' +
+      '<div class="cat-title">' + esc(p.name) + ' <span class="proj-path">' + esc(p.root) + '</span></div>' +
+      '<div class="cat-bytes">' + esc(fmtBytes(p.total_bytes)) + '</div></div>';
+    for (const a of p.artifacts) {
+      const badge = (DEV_KIND_ICON[a.kind_id] || "dev").toUpperCase();
+      html += '<div class="rule-row" title="' + esc(a.path) + '">' +
+        '<label class="chk"><input type="checkbox" data-art="' + a.index + '" data-proj-of="' + esc(p.root) + '"><span class="box"></span></label>' +
+        '<span class="kind-badge">' + esc(badge) + '</span>' +
+        '<div class="rule-detail"><div class="rule-name">' + esc(a.dir_name) +
+        ' <span class="rule-count">' + esc(a.kind_label) + '</span></div>' +
+        '<div class="rule-base">restored by ' + esc(a.restore_hint) + '</div></div>' +
+        '<div class="rule-count">' + filesLabel(a.files) + '</div>' +
+        '<div class="rule-bytes">' + esc(fmtBytes(a.bytes)) + '</div></div>';
+    }
+    html += "</div>";
+  }
+  $("dev-projects").innerHTML = html;
+
+  document.querySelectorAll('#dev-projects input[data-art]').forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const idx = Number(cb.dataset.art);
+      if (cb.checked) devChecked.add(idx); else devChecked.delete(idx);
+      syncProjBoxes(); devSelectionChanged();
+    });
+  });
+  document.querySelectorAll('#dev-projects input[data-proj]').forEach((cb) => {
+    cb.addEventListener("change", () => {
+      document.querySelectorAll('#dev-projects input[data-proj-of="' + CSS.escape(cb.dataset.proj) + '"]').forEach((a) => {
+        a.checked = cb.checked;
+        if (cb.checked) devChecked.add(Number(a.dataset.art)); else devChecked.delete(Number(a.dataset.art));
+      });
+      devSelectionChanged();
+    });
+  });
+  devSelectionChanged();
+}
+
+function syncProjBoxes() {
+  document.querySelectorAll('#dev-projects input[data-proj]').forEach((cb) => {
+    const kids = [...document.querySelectorAll('#dev-projects input[data-proj-of="' + CSS.escape(cb.dataset.proj) + '"]')];
+    cb.checked = kids.length > 0 && kids.every((k) => k.checked);
+  });
+}
+
+function devSelectionChanged() {
+  let bytes = 0;
+  const byIndex = new Map();
+  devReport.projects.forEach((p) => p.artifacts.forEach((a) => byIndex.set(a.index, a)));
+  devChecked.forEach((i) => { const a = byIndex.get(i); if (a) bytes += a.bytes; });
+  $("dev-sel-size").textContent = fmtBytes(bytes);
+  $("dev-sel-files").textContent = devChecked.size
+    ? filesLabel(devChecked.size).replace(/files?$/, devChecked.size === 1 ? "folder" : "folders") + " selected"
+    : "nothing selected";
+  $("dev-applybar").hidden = devChecked.size === 0;
+}
+
+$("btn-dev-clean").addEventListener("click", async () => {
+  let bytes = 0;
+  const byIndex = new Map();
+  devReport.projects.forEach((p) => p.artifacts.forEach((a) => byIndex.set(a.index, a)));
+  devChecked.forEach((i) => { const a = byIndex.get(i); if (a) bytes += a.bytes; });
+  const n = devChecked.size;
+  const ok = await confirmModal(
+    "Recycle developer folders?",
+    "Move " + n + " build/dependency folder" + (n === 1 ? "" : "s") + " (" + fmtBytes(bytes) + ") to the Recycle Bin? " +
+    "These are regenerable (npm install, cargo build, etc.) and your source code is not affected.");
+  if (!ok) return;
+  busyShow("Moving folders to Recycle Bin");
+  try {
+    const res = await invoke("dev_apply", { artifactIndexes: [...devChecked] });
+    showApplyResult(res, "folders");
+    refreshUndo();
+    $("dev-projects").innerHTML = '<div class="hint">Done. Rescan to see the current state.</div>';
+    $("dev-summary").hidden = true;
+    $("dev-applybar").hidden = true;
+  } catch (err) {
+    toast(String(err), true);
+  } finally { busyHide(); }
+});
 
 // --------------------------------------------------------------- undo --
 

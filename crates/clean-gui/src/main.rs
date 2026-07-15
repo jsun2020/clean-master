@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use clean_core::devscan::scan_projects;
 use clean_core::dupes::{find_duplicates, DupeGroup, DupeOptions};
 use clean_core::report;
 use clean_core::rules::{builtin_rules, evaluate_all_with_progress};
@@ -26,6 +27,9 @@ struct AppState {
     junk: Mutex<Vec<JunkRuleState>>,
     /// Result of the last duplicate scan.
     dupes: Mutex<Vec<DupeGroup>>,
+    /// Deletable developer artifacts from the last dev scan, flat and indexed;
+    /// the UI selects by index and the path is re-derived here (never injected).
+    dev: Mutex<Vec<(String, u64)>>,
 }
 
 struct JunkRuleState {
@@ -515,6 +519,174 @@ async fn analyze_path(app: AppHandle, path: String) -> Result<AnalyzeDto, String
     .map_err(|e| format!("analyze task failed: {e}"))?
 }
 
+// ------------------------------------------------------ developer scan --
+
+#[derive(Serialize)]
+struct DevArtifactDto {
+    index: usize,
+    kind_id: String,
+    kind_label: String,
+    dir_name: String,
+    path: String,
+    bytes: u64,
+    files: u64,
+    restore_hint: String,
+}
+
+#[derive(Serialize)]
+struct DevProjectDto {
+    name: String,
+    root: String,
+    total_bytes: u64,
+    artifacts: Vec<DevArtifactDto>,
+}
+
+#[derive(Serialize)]
+struct DevScanDto {
+    root: String,
+    project_count: usize,
+    artifact_count: usize,
+    total_bytes: u64,
+    truncated: bool,
+    projects: Vec<DevProjectDto>,
+}
+
+const MAX_DEV_PROJECTS_IN_UI: usize = 300;
+
+#[tauri::command]
+async fn dev_scan(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<DevScanDto, String> {
+    let root = PathBuf::from(&path);
+    if !root.is_dir() {
+        return Err(format!("Not a folder: {path}"));
+    }
+    let app2 = app.clone();
+    let projects = tauri::async_runtime::spawn_blocking(move || {
+        scan_projects(&root, &|seen| {
+            if seen % 1024 == 0 {
+                emit_progress(&app2, "dev-scan", "scanning projects", seen);
+            }
+        })
+    })
+    .await
+    .map_err(|e| format!("dev scan task failed: {e}"))?;
+
+    // Flat, indexed target list for apply. The index the UI receives maps 1:1
+    // to a (path, size) here; the path is never taken from the webview.
+    let mut flat: Vec<(String, u64)> = Vec::new();
+    let total_bytes: u64 = projects.iter().map(|p| p.total_bytes).sum();
+    let artifact_count: usize = projects.iter().map(|p| p.artifacts.len()).sum();
+
+    let mut dto_projects = Vec::new();
+    for p in projects.iter().take(MAX_DEV_PROJECTS_IN_UI) {
+        let mut arts = Vec::new();
+        for a in &p.artifacts {
+            let index = flat.len();
+            flat.push((a.path.clone(), a.bytes));
+            arts.push(DevArtifactDto {
+                index,
+                kind_id: a.kind_id.clone(),
+                kind_label: a.kind_label.clone(),
+                dir_name: a.dir_name.clone(),
+                path: a.path.clone(),
+                bytes: a.bytes,
+                files: a.files,
+                restore_hint: a.restore_hint.clone(),
+            });
+        }
+        dto_projects.push(DevProjectDto {
+            name: p.name.clone(),
+            root: p.root.clone(),
+            total_bytes: p.total_bytes,
+            artifacts: arts,
+        });
+    }
+    // Index any artifacts beyond the display cap too, so their indexes stay
+    // valid if ever referenced; they simply are not shown.
+    for p in projects.iter().skip(MAX_DEV_PROJECTS_IN_UI) {
+        for a in &p.artifacts {
+            flat.push((a.path.clone(), a.bytes));
+        }
+    }
+
+    *state.dev.lock().map_err(|_| "state lock poisoned")? = flat;
+    Ok(DevScanDto {
+        root: path,
+        project_count: projects.len(),
+        artifact_count,
+        total_bytes,
+        truncated: projects.len() > MAX_DEV_PROJECTS_IN_UI,
+        projects: dto_projects,
+    })
+}
+
+#[tauri::command]
+async fn dev_apply(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    artifact_indexes: Vec<usize>,
+) -> Result<ApplyDto, String> {
+    let targets: Vec<(String, u64)> = {
+        let dev = state.dev.lock().map_err(|_| "state lock poisoned")?;
+        if dev.is_empty() {
+            return Err("No scan results. Run a scan first.".into());
+        }
+        artifact_indexes
+            .iter()
+            .filter_map(|&i| dev.get(i).cloned())
+            .collect()
+    };
+    if targets.is_empty() {
+        return Err("Nothing selected.".into());
+    }
+
+    let app2 = app.clone();
+    let (requested, outcome, manifest) = tauri::async_runtime::spawn_blocking(move || {
+        // Artifact directories live in user space; the protected-root guard
+        // still applies (nothing under Windows/Program Files is ever touched).
+        let filtered: Vec<(String, u64)> = targets
+            .into_iter()
+            .filter(|(p, _)| deletion_allowed(Path::new(p), &[]))
+            .collect();
+        let total = filtered.len();
+        let mut manifest = ActionManifest::new();
+        // trash::delete recycles each directory as a single operation.
+        let outcome = recycle_files(&filtered, &mut manifest, |done| {
+            let _ = app2.emit(
+                "apply-progress",
+                serde_json::json!({ "done": done, "total": total }),
+            );
+        });
+        let manifest_path = if manifest.actions.is_empty() {
+            None
+        } else {
+            manifest
+                .save(&manifest_dir())
+                .ok()
+                .map(|p| p.display().to_string())
+        };
+        (total, outcome, manifest_path)
+    })
+    .await
+    .map_err(|e| format!("apply task failed: {e}"))?;
+
+    state.dev.lock().map_err(|_| "state lock poisoned")?.clear();
+    let holders = failure_holders(&outcome.failed);
+    Ok(ApplyDto {
+        requested,
+        deleted: outcome.deleted,
+        bytes: outcome.bytes,
+        failed: outcome.failed.len(),
+        failed_sample: outcome.failed.into_iter().take(5).collect(),
+        holders,
+        blocked_rules: Vec::new(),
+        manifest,
+    })
+}
+
 #[tauri::command]
 async fn undo_status() -> Result<Option<UndoStatusDto>, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -576,6 +748,8 @@ fn main() {
             junk_apply,
             dupes_scan,
             dupes_apply,
+            dev_scan,
+            dev_apply,
             analyze_path,
             undo_status,
             undo_last,
