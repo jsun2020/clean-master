@@ -12,6 +12,7 @@ use clean_core::rules::{builtin_rules, evaluate_all_with_progress};
 use clean_core::safety::{deletion_allowed, recycle_files, ActionManifest};
 use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -88,6 +89,10 @@ struct ApplyDto {
     /// Running applications holding open handles to the failed files
     /// (Restart Manager, batched). Empty when nothing failed or unknown.
     holders: Vec<String>,
+    /// Rule ids that had at least one file fail to recycle (junk only).
+    /// The UI greys these on the next scan and drops them from the
+    /// "reclaimable now" headline. Empty for duplicates.
+    blocked_rules: Vec<String>,
     manifest: Option<String>,
 }
 
@@ -236,18 +241,24 @@ async fn junk_apply(
     state: State<'_, AppState>,
     rule_ids: Vec<String>,
 ) -> Result<ApplyDto, String> {
-    let (targets, bases) = {
+    let (targets, bases, path_to_rule) = {
         let junk = state.junk.lock().map_err(|_| "state lock poisoned")?;
         if junk.is_empty() {
             return Err("No scan results. Run a scan first.".into());
         }
         let mut targets: Vec<(String, u64)> = Vec::new();
         let mut bases: Vec<PathBuf> = Vec::new();
+        // Remember which rule each target came from, so a failed file can be
+        // mapped back to its rule for the "in use" marking on the next scan.
+        let mut path_to_rule: HashMap<String, String> = HashMap::new();
         for r in junk.iter().filter(|r| rule_ids.contains(&r.id)) {
             bases.push(r.base.clone());
-            targets.extend(r.targets.iter().cloned());
+            for (p, sz) in &r.targets {
+                targets.push((p.clone(), *sz));
+                path_to_rule.insert(p.clone(), r.id.clone());
+            }
         }
-        (targets, bases)
+        (targets, bases, path_to_rule)
     };
     if targets.is_empty() {
         return Err("Nothing selected.".into());
@@ -286,6 +297,14 @@ async fn junk_apply(
     // Results are now stale: force a rescan before the next apply.
     state.junk.lock().map_err(|_| "state lock poisoned")?.clear();
     let holders = failure_holders(&outcome.failed);
+    let mut blocked_rules: Vec<String> = Vec::new();
+    for (p, _) in &outcome.failed {
+        if let Some(rid) = path_to_rule.get(p) {
+            if !blocked_rules.contains(rid) {
+                blocked_rules.push(rid.clone());
+            }
+        }
+    }
     Ok(ApplyDto {
         requested,
         deleted: outcome.deleted,
@@ -293,6 +312,7 @@ async fn junk_apply(
         failed: outcome.failed.len(),
         failed_sample: outcome.failed.into_iter().take(5).collect(),
         holders,
+        blocked_rules,
         manifest,
     })
 }
@@ -427,6 +447,7 @@ async fn dupes_apply(
         failed: outcome.failed.len(),
         failed_sample: outcome.failed.into_iter().take(5).collect(),
         holders,
+        blocked_rules: Vec::new(),
         manifest,
     })
 }
