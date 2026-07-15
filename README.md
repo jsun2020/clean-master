@@ -23,6 +23,11 @@ Three screens, same safety contract as the CLI:
 - **Duplicates** - pick a folder, full BLAKE3 verification, the KEEP copy is
   marked and can never be deleted; opt groups in or out.
 - **Space Analyze** - largest files/folders, by type, by age. Read-only.
+- **Developer** - pick a folder; finds regenerable dependency/build folders
+  (node_modules, Rust/Maven `target`, Gradle output, Python venvs, .NET
+  bin/obj) grouped by project. Off by default (opt-in per project); an
+  artifact is only listed when a project manifest proves it is regenerable,
+  so source code and `.git` are never touched.
 - **Undo** - every clean writes a manifest to `%LOCALAPPDATA%\CleanMaster`;
   the sidebar restores the last clean from the Recycle Bin in one click.
 

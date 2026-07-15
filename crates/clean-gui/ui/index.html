@@ -35,6 +35,10 @@
         <svg viewBox="0 0 20 20"><path d="M3 17V9M8 17V4M13 17v-6M18 17V7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
         Space Analyze
       </button>
+      <button class="nav-item" data-view="dev">
+        <svg viewBox="0 0 20 20"><path d="M7 6l-4 4 4 4M13 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Developer
+      </button>
     </nav>
 
     <div class="side-foot">
@@ -130,6 +134,32 @@
         <div class="panel"><h2>Largest folders</h2><div class="rows" id="an-dirs"></div></div>
         <div class="panel"><h2>By type</h2><div class="rows" id="an-exts"></div></div>
         <div class="panel"><h2>By age (last modified)</h2><div class="rows" id="an-ages"></div></div>
+      </div>
+    </section>
+
+    <!-- DEVELOPER ------------------------------------------------------ -->
+    <section class="view" id="view-dev" hidden>
+      <header class="head">
+        <div>
+          <h1 class="hero-num" id="dev-hero">Developer cleanup</h1>
+          <p class="hero-sub">Reclaim regenerable dependency and build folders (node_modules, target, venv, bin/obj) per project. Source code and Git history are never touched, and nothing is selected by default.</p>
+        </div>
+      </header>
+
+      <div class="toolbar">
+        <div class="path-field"><span class="path-placeholder" id="dev-path">Choose a folder that holds your projects</span></div>
+        <button class="btn ghost" id="btn-dev-browse">Browse</button>
+        <button class="btn primary" id="btn-dev-scan" disabled>Scan</button>
+      </div>
+
+      <div class="progress-line" id="dev-progress" hidden><div class="bar indeterminate"></div><span class="progress-label" id="dev-progress-label"></span></div>
+
+      <div class="summary-strip" id="dev-summary" hidden></div>
+      <div class="cards" id="dev-projects"></div>
+
+      <div class="apply-bar" id="dev-applybar" hidden>
+        <div class="apply-info"><strong id="dev-sel-size">0 B</strong><span id="dev-sel-files">nothing selected</span></div>
+        <button class="btn primary" id="btn-dev-clean">Recycle selected</button>
       </div>
     </section>
 
