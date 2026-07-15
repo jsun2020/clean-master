@@ -212,6 +212,154 @@ pub fn undo(_manifest: &ActionManifest) -> Result<UndoOutcome, CoreError> {
     ))
 }
 
+/// Names of running applications that hold open handles to any of `paths`
+/// (the usual reason a Recycle-Bin move fails: Chromium-based apps keep
+/// their %TEMP% files open without FILE_SHARE_DELETE for their lifetime).
+/// One batched Restart Manager session - never call this per file during a
+/// scan; it is for explaining failures after an apply.
+#[cfg(windows)]
+pub fn in_use_by(paths: &[String]) -> Vec<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct RmUniqueProcess {
+        process_id: u32,
+        start_time: [u32; 2],
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct RmProcessInfo {
+        process: RmUniqueProcess,
+        app_name: [u16; 256],
+        service_short_name: [u16; 64],
+        application_type: i32,
+        app_status: u32,
+        ts_session_id: u32,
+        restartable: i32,
+    }
+    #[link(name = "rstrtmgr")]
+    extern "system" {
+        fn RmStartSession(handle: *mut u32, flags: u32, key: *mut u16) -> u32;
+        fn RmEndSession(handle: u32) -> u32;
+        fn RmRegisterResources(
+            handle: u32,
+            n_files: u32,
+            file_names: *const *const u16,
+            n_apps: u32,
+            apps: *const RmUniqueProcess,
+            n_services: u32,
+            service_names: *const *const u16,
+        ) -> u32;
+        fn RmGetList(
+            handle: u32,
+            needed: *mut u32,
+            count: *mut u32,
+            info: *mut RmProcessInfo,
+            reboot_reasons: *mut u32,
+        ) -> u32;
+    }
+
+    const MAX_FILES: usize = 64; // a sample is enough to name the culprits
+    const ERROR_MORE_DATA: u32 = 234;
+
+    let wide: Vec<Vec<u16>> = paths
+        .iter()
+        .take(MAX_FILES)
+        .map(|p| {
+            std::ffi::OsStr::new(p)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect()
+        })
+        .collect();
+    if wide.is_empty() {
+        return Vec::new();
+    }
+    let ptrs: Vec<*const u16> = wide.iter().map(|w| w.as_ptr()).collect();
+
+    let mut names = Vec::new();
+    unsafe {
+        let mut handle = 0u32;
+        let mut key = [0u16; 33]; // CCH_RM_SESSION_KEY + 1
+        if RmStartSession(&mut handle, 0, key.as_mut_ptr()) != 0 {
+            return names;
+        }
+        if RmRegisterResources(
+            handle,
+            ptrs.len() as u32,
+            ptrs.as_ptr(),
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+        ) == 0
+        {
+            let mut needed = 0u32;
+            let mut count = 0u32;
+            let mut reasons = 0u32;
+            let rc = RmGetList(
+                handle,
+                &mut needed,
+                &mut count,
+                std::ptr::null_mut(),
+                &mut reasons,
+            );
+            if (rc == ERROR_MORE_DATA || rc == 0) && needed > 0 {
+                let cap = needed.min(64) as usize;
+                let mut infos = vec![
+                    RmProcessInfo {
+                        process: RmUniqueProcess {
+                            process_id: 0,
+                            start_time: [0; 2],
+                        },
+                        app_name: [0; 256],
+                        service_short_name: [0; 64],
+                        application_type: 0,
+                        app_status: 0,
+                        ts_session_id: 0,
+                        restartable: 0,
+                    };
+                    cap
+                ];
+                let mut count = cap as u32;
+                if RmGetList(
+                    handle,
+                    &mut needed,
+                    &mut count,
+                    infos.as_mut_ptr(),
+                    &mut reasons,
+                ) == 0
+                {
+                    for info in infos.iter().take(count as usize) {
+                        let len = info
+                            .app_name
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(info.app_name.len());
+                        let name = String::from_utf16_lossy(&info.app_name[..len]);
+                        let name = if name.is_empty() {
+                            format!("PID {}", info.process.process_id)
+                        } else {
+                            name
+                        };
+                        if !names.contains(&name) {
+                            names.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        RmEndSession(handle);
+    }
+    names
+}
+
+#[cfg(not(windows))]
+pub fn in_use_by(_paths: &[String]) -> Vec<String> {
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +408,28 @@ mod tests {
             Path::new("C:\\Users\\someone\\Downloads\\dupe.iso"),
             &[]
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn in_use_by_names_the_holding_process() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("held-open.bin");
+        std::fs::write(&p, b"x").unwrap();
+        // Hold the file open WITHOUT FILE_SHARE_DELETE - the exact state
+        // Chromium apps leave their %TEMP% files in (blocks recycling).
+        let _guard = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x2) // read + write, no delete
+            .open(&p)
+            .unwrap();
+        let holders = in_use_by(&[p.display().to_string()]);
+        assert!(!holders.is_empty(), "expected the test process as holder");
+        // A file nobody holds reports no holders.
+        let free = dir.path().join("free.bin");
+        std::fs::write(&free, b"y").unwrap();
+        assert!(in_use_by(&[free.display().to_string()]).is_empty());
     }
 
     #[test]

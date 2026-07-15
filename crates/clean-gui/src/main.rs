@@ -85,7 +85,19 @@ struct ApplyDto {
     bytes: u64,
     failed: usize,
     failed_sample: Vec<(String, String)>,
+    /// Running applications holding open handles to the failed files
+    /// (Restart Manager, batched). Empty when nothing failed or unknown.
+    holders: Vec<String>,
     manifest: Option<String>,
+}
+
+/// Explain failures: which running apps hold the files that would not move.
+fn failure_holders(failed: &[(String, String)]) -> Vec<String> {
+    if failed.is_empty() {
+        return Vec::new();
+    }
+    let paths: Vec<String> = failed.iter().map(|(p, _)| p.clone()).collect();
+    clean_core::safety::in_use_by(&paths)
 }
 
 #[derive(Serialize)]
@@ -273,12 +285,14 @@ async fn junk_apply(
     let (requested, outcome, manifest) = result;
     // Results are now stale: force a rescan before the next apply.
     state.junk.lock().map_err(|_| "state lock poisoned")?.clear();
+    let holders = failure_holders(&outcome.failed);
     Ok(ApplyDto {
         requested,
         deleted: outcome.deleted,
         bytes: outcome.bytes,
         failed: outcome.failed.len(),
         failed_sample: outcome.failed.into_iter().take(5).collect(),
+        holders,
         manifest,
     })
 }
@@ -405,12 +419,14 @@ async fn dupes_apply(
     .map_err(|e| format!("apply task failed: {e}"))?;
 
     state.dupes.lock().map_err(|_| "state lock poisoned")?.clear();
+    let holders = failure_holders(&outcome.failed);
     Ok(ApplyDto {
         requested,
         deleted: outcome.deleted,
         bytes: outcome.bytes,
         failed: outcome.failed.len(),
         failed_sample: outcome.failed.into_iter().take(5).collect(),
+        holders,
         manifest,
     })
 }

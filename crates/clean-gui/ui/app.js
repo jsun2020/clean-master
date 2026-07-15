@@ -43,20 +43,44 @@ function toast(msg, isErr) {
   setTimeout(() => { el.classList.add("gone"); setTimeout(() => el.remove(), 350); }, 5200);
 }
 
-function confirmModal(title, body, okLabel) {
+function confirmModal(title, body, okLabel, okOnly) {
   return new Promise((resolve) => {
     $("modal-title").textContent = title;
     $("modal-body").textContent = body;
     $("modal-ok").textContent = okLabel || "Move to Recycle Bin";
+    $("modal-cancel").hidden = Boolean(okOnly);
     $("overlay").hidden = false;
     const done = (v) => {
       $("overlay").hidden = true;
+      $("modal-cancel").hidden = false;
       $("modal-ok").onclick = $("modal-cancel").onclick = null;
       resolve(v);
     };
     $("modal-ok").onclick = () => done(true);
     $("modal-cancel").onclick = () => done(false);
   });
+}
+
+/* Honest apply outcome: success -> toast; failures -> explain who holds the
+   files (Restart Manager result from the Rust side) in an OK-only dialog. */
+function showApplyResult(res, noun) {
+  if (!res.failed) {
+    toast("Recycled " + fmtCount(res.deleted) + " " + noun + ", freed " + fmtBytes(res.bytes) + ".");
+    return { blockedMsg: null };
+  }
+  const who = res.holders && res.holders.length
+    ? "They are in use by: " + res.holders.join(", ") + "."
+    : "They are in use by running programs or protected by permissions.";
+  const body =
+    "Recycled " + fmtCount(res.deleted) + " " + noun + " (" + fmtBytes(res.bytes) + " freed). " +
+    fmtCount(res.failed) + " could not be moved to the Recycle Bin. " + who +
+    " Close those programs and rescan - until then, these files stay in the list and keep counting as reclaimable.";
+  confirmModal("Some files are still in use", body, "OK", true);
+  const blockedMsg = res.holders && res.holders.length
+    ? "<b>" + fmtCount(res.failed) + " files</b> could not be cleaned - still held open by <b>" +
+      esc(res.holders.join(", ")) + "</b>. Close those programs, then rescan."
+    : "<b>" + fmtCount(res.failed) + " files</b> could not be cleaned - in use by running programs. Close them, then rescan.";
+  return { blockedMsg };
 }
 
 function busyShow(title) {
@@ -111,6 +135,9 @@ const RULE_NAMES = {
 
 let junkReport = null;
 const junkSelected = new Set();
+/* Set after an apply that had failures; shown as a banner on the rescan so
+   the recurring "reclaimable" number is explained instead of looking stuck. */
+let junkBlockedMsg = null;
 
 async function junkScan() {
   $("junk-hero").innerHTML = 'Scanning<span class="dots"></span>';
@@ -135,6 +162,12 @@ async function junkScan() {
 
 function renderJunk() {
   const rep = junkReport;
+  if (junkBlockedMsg) {
+    $("junk-banner").innerHTML = junkBlockedMsg;
+    $("junk-banner").hidden = false;
+  } else {
+    $("junk-banner").hidden = true;
+  }
   $("junk-hero").innerHTML = "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong> reclaimable";
   $("junk-sub").textContent =
     fmtCount(rep.total_files) + " junk files across " + rep.rules.length +
@@ -212,7 +245,10 @@ function junkSelectionChanged() {
   $("junk-applybar").hidden = files === 0;
 }
 
-$("btn-junk-rescan").addEventListener("click", junkScan);
+$("btn-junk-rescan").addEventListener("click", () => {
+  junkBlockedMsg = null; // user acted on the notice; next result will re-set it
+  junkScan();
+});
 
 $("btn-junk-clean").addEventListener("click", async () => {
   let files = 0, bytes = 0;
@@ -225,8 +261,7 @@ $("btn-junk-clean").addEventListener("click", async () => {
   busyShow("Moving to Recycle Bin");
   try {
     const res = await invoke("junk_apply", { ruleIds: [...junkSelected] });
-    toast("Recycled " + fmtCount(res.deleted) + " files, freed " + fmtBytes(res.bytes) +
-      (res.failed ? ". " + fmtCount(res.failed) + " locked/in-use files skipped." : "."));
+    junkBlockedMsg = showApplyResult(res, "files").blockedMsg;
     refreshUndo();
     junkScan();
   } catch (err) {
@@ -337,8 +372,7 @@ $("btn-dupes-clean").addEventListener("click", async () => {
   busyShow("Moving to Recycle Bin");
   try {
     const res = await invoke("dupes_apply", { groupIndexes: [...dupesChecked] });
-    toast("Recycled " + fmtCount(res.deleted) + " copies, freed " + fmtBytes(res.bytes) +
-      (res.failed ? ". " + fmtCount(res.failed) + " locked/in-use files skipped." : "."));
+    showApplyResult(res, "copies");
     refreshUndo();
     $("dupes-groups").innerHTML = '<div class="hint">Done. Rescan to verify - the folder should now be duplicate-free.</div>';
     $("dupes-summary").hidden = true;
