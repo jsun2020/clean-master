@@ -159,6 +159,16 @@ pub struct RuleReport {
 /// Scan each rule's base directory and evaluate. Missing bases (app not
 /// installed) and unreadable subtrees are skipped silently by design.
 pub fn evaluate_all(rules: &[JunkRule], now_unix: i64) -> Vec<RuleReport> {
+    evaluate_all_with_progress(rules, now_unix, &|_, _| {})
+}
+
+/// Same as `evaluate_all`, reporting `(rule_id, entries_seen)` while each
+/// rule's base is being scanned (for UI progress display).
+pub fn evaluate_all_with_progress(
+    rules: &[JunkRule],
+    now_unix: i64,
+    progress: &(dyn Fn(&str, u64) + Sync),
+) -> Vec<RuleReport> {
     let mut reports = Vec::new();
     for rule in rules {
         let Some(base) = expand_env(&rule.base) else {
@@ -168,7 +178,9 @@ pub fn evaluate_all(rules: &[JunkRule], now_unix: i64) -> Vec<RuleReport> {
         if !base_path.is_dir() {
             continue;
         }
-        let Ok(outcome) = WalkBackend.scan(base_path, &ScanOptions::default(), &|_| {}) else {
+        let Ok(outcome) =
+            WalkBackend.scan(base_path, &ScanOptions::default(), &|seen| progress(&rule.id, seen))
+        else {
             continue;
         };
         let Ok(findings) = evaluate_records(rule, base_path, &outcome.records, now_unix) else {

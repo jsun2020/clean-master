@@ -1,0 +1,20 @@
+[package]
+name = "clean-gui"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+description = "Clean Master - desktop GUI for the clean-core disk cleaning engine"
+
+[[bin]]
+name = "clean-master"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+clean-core = { path = "../clean-core" }
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rfd = "0.15"
