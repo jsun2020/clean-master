@@ -171,6 +171,13 @@ body {
 }
 .rule-row + .rule-row { border-top: 1px dashed #efede7; }
 .rule-row.empty { opacity: .45; }
+.rule-row.blocked { opacity: .68; background: #fdfaf2; }
+.rule-row.blocked .rule-bytes { color: var(--amber); }
+.tag-inuse {
+  font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--amber); border: 1.4px solid #e6c583; background: #fdf6e8;
+  border-radius: 20px; padding: 1px 7px; margin-left: 6px; white-space: nowrap;
+}
 .rule-name { font-weight: 600; }
 .rule-detail { flex: 1; min-width: 0; }
 .rule-base { font-family: var(--mono); font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }

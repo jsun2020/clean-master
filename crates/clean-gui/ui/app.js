@@ -138,6 +138,11 @@ const junkSelected = new Set();
 /* Set after an apply that had failures; shown as a banner on the rescan so
    the recurring "reclaimable" number is explained instead of looking stuck. */
 let junkBlockedMsg = null;
+/* Rule ids whose files could not be recycled (held open by a running app).
+   These are greyed on the next scan and dropped from the reclaimable-now
+   headline, until the user closes the app and hits Rescan. */
+let junkBlockedRules = new Set();
+let junkHolders = [];
 
 async function junkScan() {
   $("junk-hero").innerHTML = 'Scanning<span class="dots"></span>';
@@ -149,7 +154,11 @@ async function junkScan() {
   try {
     junkReport = await invoke("junk_scan");
     junkSelected.clear();
-    junkReport.rules.forEach((r) => { if (r.files > 0) junkSelected.add(r.id); });
+    // Auto-select everything with content EXCEPT rules known to be blocked
+    // by a running app (they cannot be recycled until it closes).
+    junkReport.rules.forEach((r) => {
+      if (r.files > 0 && !junkBlockedRules.has(r.id)) junkSelected.add(r.id);
+    });
     renderJunk();
   } catch (err) {
     toast(String(err), true);
@@ -168,10 +177,24 @@ function renderJunk() {
   } else {
     $("junk-banner").hidden = true;
   }
-  $("junk-hero").innerHTML = "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong> reclaimable";
-  $("junk-sub").textContent =
-    fmtCount(rep.total_files) + " junk files across " + rep.rules.length +
-    " locations. This scan was a dry run - review, then clean what you select.";
+  const isBlocked = (r) => junkBlockedRules.has(r.id);
+  const blockedBytes = rep.rules.filter(isBlocked).reduce((a, r) => a + r.bytes, 0);
+  const blockedFiles = rep.rules.filter(isBlocked).reduce((a, r) => a + r.files, 0);
+  const readyBytes = rep.total_bytes - blockedBytes;
+  const readyFiles = rep.total_files - blockedFiles;
+
+  $("junk-hero").innerHTML =
+    "<strong>" + esc(fmtBytes(readyBytes)) + "</strong> reclaimable" + (blockedBytes > 0 ? " now" : "");
+  if (blockedBytes > 0) {
+    // The amber banner already names the holding apps; keep this line short.
+    $("junk-sub").textContent =
+      filesLabel(readyFiles) + " ready to clean now. " + fmtBytes(blockedBytes) +
+      " is held open by running apps (see above).";
+  } else {
+    $("junk-sub").textContent =
+      fmtCount(rep.total_files) + " junk files across " + rep.rules.length +
+      " locations. This scan was a dry run - review, then clean what you select.";
+  }
 
   const byCat = new Map();
   rep.rules.forEach((r) => {
@@ -182,8 +205,12 @@ function renderJunk() {
 
   let html = "";
   for (const [cat, rules] of byCat) {
-    const catBytes = rules.reduce((a, r) => a + r.bytes, 0);
-    const anySelectable = rules.some((r) => r.files > 0);
+    // Category totals and the master checkbox reflect only what is actually
+    // cleanable now (non-empty, non-blocked). Blocked rows show their own
+    // size in grey so it is clear the space is real but currently stuck.
+    const selectable = rules.filter((r) => r.files > 0 && !isBlocked(r));
+    const catBytes = selectable.reduce((a, r) => a + r.bytes, 0);
+    const anySelectable = selectable.length > 0;
     html += '<div class="card"><div class="cat-head">' +
       '<label class="chk"><input type="checkbox" data-cat="' + esc(cat) + '"' +
       (anySelectable ? " checked" : " disabled") + '><span class="box"></span></label>' +
@@ -191,11 +218,15 @@ function renderJunk() {
       '<div class="cat-bytes">' + esc(fmtBytes(catBytes)) + '</div></div>';
     for (const r of rules) {
       const name = RULE_NAMES[r.id] || r.id;
+      const blocked = isBlocked(r);
       const empty = r.files === 0;
-      html += '<div class="rule-row' + (empty ? " empty" : "") + '" title="' + esc(r.rationale) + '">' +
+      const disabled = empty || blocked;
+      const cls = "rule-row" + (blocked ? " blocked" : empty ? " empty" : "");
+      html += '<div class="' + cls + '" title="' + esc(r.rationale) + '">' +
         '<label class="chk"><input type="checkbox" data-rule="' + esc(r.id) + '" data-cat-of="' + esc(cat) + '"' +
-        (empty ? " disabled" : " checked") + '><span class="box"></span></label>' +
+        (disabled ? " disabled" : " checked") + '><span class="box"></span></label>' +
         '<div class="rule-detail"><div class="rule-name">' + esc(name) +
+        (blocked ? ' <span class="tag-inuse">in use</span>' : "") +
         (r.min_age_days > 0 ? ' <span class="rule-count">(older than ' + r.min_age_days + ' days only)</span>' : "") +
         '</div><div class="rule-base">' + esc(r.base) + '</div>' +
         '<div class="meter"><i style="width:' + Math.max(1, Math.round((r.bytes / maxBytes) * 100)) + '%"></i></div></div>' +
@@ -246,7 +277,12 @@ function junkSelectionChanged() {
 }
 
 $("btn-junk-rescan").addEventListener("click", () => {
-  junkBlockedMsg = null; // user acted on the notice; next result will re-set it
+  // User is re-checking after acting on the notice: forget the blocked state
+  // so files that are now free are re-offered; still-open ones will only be
+  // re-flagged if a fresh clean attempt fails again.
+  junkBlockedMsg = null;
+  junkBlockedRules = new Set();
+  junkHolders = [];
   junkScan();
 });
 
@@ -261,6 +297,8 @@ $("btn-junk-clean").addEventListener("click", async () => {
   busyShow("Moving to Recycle Bin");
   try {
     const res = await invoke("junk_apply", { ruleIds: [...junkSelected] });
+    junkBlockedRules = new Set(res.blocked_rules || []);
+    junkHolders = res.holders || [];
     junkBlockedMsg = showApplyResult(res, "files").blockedMsg;
     refreshUndo();
     junkScan();
