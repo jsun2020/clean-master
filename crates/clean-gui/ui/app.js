@@ -1,11 +1,68 @@
 /* Clean Master frontend. Talks to the Rust side via Tauri commands only;
-   every destructive action is confirmed here and re-validated in Rust. */
+   every destructive action is confirmed here and re-validated in Rust.
+   All user-visible text goes through t()/tf() (see i18n.js); the backend
+   keeps sending stable ids plus English labels as the fallback. */
 "use strict";
 
 const invoke = window.__TAURI__.core.invoke;
 const listen = window.__TAURI__.event.listen;
 
 const $ = (id) => document.getElementById(id);
+
+// -------------------------------------------------------------- i18n ----
+
+let lang = (() => {
+  const saved = localStorage.getItem("cm.lang");
+  if (saved === "en" || saved === "zh") return saved;
+  return (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+})();
+
+const dict = () => window.CM_I18N[lang];
+
+function t(key) {
+  return dict().ui[key] ?? window.CM_I18N.en.ui[key] ?? key;
+}
+function tf(key, vars) {
+  let s = t(key);
+  for (const [k, v] of Object.entries(vars)) s = s.split("{" + k + "}").join(String(v));
+  return s;
+}
+/* Backend-label translators: keyed by id where one exists, otherwise by the
+   exact English string the backend emits. Unknown -> backend text. */
+const trRule = (id) => dict().rules[id] || window.CM_I18N.en.rules[id] || id;
+const trRationale = (id, fallback) => dict().rationales[id] || fallback;
+const trCat = (label) => dict().cats[label] || label;
+const trKind = (kindId, fallback) => dict().kinds[kindId] || fallback;
+const trHint = (hint) => dict().hints[hint] || hint;
+const trAge = (label) => dict().ages[label] || label;
+
+function applyStatic() {
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  document.querySelectorAll("[data-i18n]").forEach((el) => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll("[data-i18n-html]").forEach((el) => { el.innerHTML = t(el.dataset.i18nHtml); });
+  // Path placeholders keep the chosen path once one is set.
+  [["dupes-path", "choose_folder_scan"], ["an-path", "choose_folder_drive"], ["dev-path", "choose_folder_projects"]]
+    .forEach(([id, key]) => { const el = $(id); if (!el.classList.contains("set")) el.textContent = t(key); });
+  document.querySelectorAll(".lang-btn").forEach((b) => b.classList.toggle("active", b.dataset.lang === lang));
+}
+
+function setLang(next) {
+  if (next === lang) return;
+  lang = next;
+  localStorage.setItem("cm.lang", lang);
+  applyStatic();
+  // Re-render whatever data is on screen in the new language.
+  if (junkReport) renderJunk();
+  else { $("junk-hero").innerHTML = t("scanning") + '<span class="dots"></span>'; $("junk-sub").textContent = t("junk_scan_sub"); }
+  if (dupesReport) renderDupes();
+  if (lastAnalyze) renderAnalyze(lastAnalyze);
+  if (devReport) renderDev();
+  refreshUndo();
+}
+
+document.querySelectorAll(".lang-btn").forEach((b) => {
+  b.addEventListener("click", () => setLang(b.dataset.lang));
+});
 
 // ------------------------------------------------------------- helpers --
 
@@ -16,9 +73,11 @@ function fmtBytes(n) {
   return (i === 0 ? v.toFixed(0) : v.toFixed(1)) + " " + units[i];
 }
 
-function fmtCount(n) { return Number(n).toLocaleString("en-US"); }
+function fmtCount(n) { return Number(n).toLocaleString(lang === "zh" ? "zh-CN" : "en-US"); }
 
-function filesLabel(n) { return fmtCount(n) + (Number(n) === 1 ? " file" : " files"); }
+function filesLabel(n) {
+  return tf(Number(n) === 1 ? "file_one" : "file_many", { n: fmtCount(n) });
+}
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({
@@ -29,10 +88,10 @@ function esc(s) {
 function timeAgo(unix) {
   if (!unix) return "";
   const s = Math.max(0, Math.floor(Date.now() / 1000) - unix);
-  if (s < 60) return "just now";
-  if (s < 3600) return Math.floor(s / 60) + " min ago";
-  if (s < 86400) return Math.floor(s / 3600) + " h ago";
-  return Math.floor(s / 86400) + " d ago";
+  if (s < 60) return t("just_now");
+  if (s < 3600) return tf("min_ago", { n: Math.floor(s / 60) });
+  if (s < 86400) return tf("h_ago", { n: Math.floor(s / 3600) });
+  return tf("d_ago", { n: Math.floor(s / 86400) });
 }
 
 function toast(msg, isErr) {
@@ -47,7 +106,7 @@ function confirmModal(title, body, okLabel, okOnly) {
   return new Promise((resolve) => {
     $("modal-title").textContent = title;
     $("modal-body").textContent = body;
-    $("modal-ok").textContent = okLabel || "Move to Recycle Bin";
+    $("modal-ok").textContent = okLabel || t("move_to_bin");
     $("modal-cancel").hidden = Boolean(okOnly);
     $("overlay").hidden = false;
     const done = (v) => {
@@ -63,23 +122,23 @@ function confirmModal(title, body, okLabel, okOnly) {
 
 /* Honest apply outcome: success -> toast; failures -> explain who holds the
    files (Restart Manager result from the Rust side) in an OK-only dialog. */
-function showApplyResult(res, noun) {
+function showApplyResult(res, nounKey) {
+  const noun = t(nounKey);
   if (!res.failed) {
-    toast("Recycled " + fmtCount(res.deleted) + " " + noun + ", freed " + fmtBytes(res.bytes) + ".");
+    toast(tf("toast_recycled", { n: fmtCount(res.deleted), noun, bytes: fmtBytes(res.bytes) }));
     return { blockedMsg: null };
   }
   const who = res.holders && res.holders.length
-    ? "They are in use by: " + res.holders.join(", ") + "."
-    : "They are in use by running programs or protected by permissions.";
-  const body =
-    "Recycled " + fmtCount(res.deleted) + " " + noun + " (" + fmtBytes(res.bytes) + " freed). " +
-    fmtCount(res.failed) + " could not be moved to the Recycle Bin. " + who +
-    " Close those programs and rescan - until then, these files stay in the list and keep counting as reclaimable.";
-  confirmModal("Some files are still in use", body, "OK", true);
+    ? tf("inuse_by", { who: res.holders.join(", ") })
+    : t("inuse_generic");
+  const body = tf("inuse_body", {
+    n: fmtCount(res.deleted), noun, bytes: fmtBytes(res.bytes),
+    failed: fmtCount(res.failed), who,
+  });
+  confirmModal(t("inuse_title"), body, t("ok"), true);
   const blockedMsg = res.holders && res.holders.length
-    ? "<b>" + fmtCount(res.failed) + " files</b> could not be cleaned - still held open by <b>" +
-      esc(res.holders.join(", ")) + "</b>. Close those programs, then rescan."
-    : "<b>" + fmtCount(res.failed) + " files</b> could not be cleaned - in use by running programs. Close them, then rescan.";
+    ? tf("banner_holders", { failed: fmtCount(res.failed), who: esc(res.holders.join(", ")) })
+    : tf("banner_generic", { failed: fmtCount(res.failed) });
   return { blockedMsg };
 }
 
@@ -105,12 +164,11 @@ document.querySelectorAll(".nav-item").forEach((btn) => {
 
 listen("progress", (e) => {
   const { stage, label, seen } = e.payload;
-  const text = fmtCount(seen) + " entries";
-  if (stage === "junk-scan") $("junk-progress-label").textContent = label + " - " + text;
-  else if (stage === "dupe-scan") $("dupes-progress-label").textContent = "scanning - " + text;
-  else if (stage === "dupe-hash") $("dupes-progress-label").textContent = "verifying content (BLAKE3)...";
-  else if (stage === "analyze-scan") $("an-progress-label").textContent = "scanning - " + text;
-  else if (stage === "dev-scan") $("dev-progress-label").textContent = "scanning projects - " + fmtCount(seen) + " folders (sizing artifacts...)";
+  if (stage === "junk-scan") $("junk-progress-label").textContent = label + " - " + tf("entries", { n: fmtCount(seen) });
+  else if (stage === "dupe-scan") $("dupes-progress-label").textContent = tf("prog_scanning", { n: fmtCount(seen) });
+  else if (stage === "dupe-hash") $("dupes-progress-label").textContent = t("prog_hashing");
+  else if (stage === "analyze-scan") $("an-progress-label").textContent = tf("prog_scanning", { n: fmtCount(seen) });
+  else if (stage === "dev-scan") $("dev-progress-label").textContent = tf("prog_dev", { n: fmtCount(seen) });
 });
 
 listen("apply-progress", (e) => {
@@ -121,18 +179,6 @@ listen("apply-progress", (e) => {
 });
 
 // -------------------------------------------------------------- junk ---
-
-const RULE_NAMES = {
-  "win.user_temp": "User temp folder",
-  "win.windows_temp": "Windows temp",
-  "browser.chrome_cache": "Chrome cache",
-  "browser.edge_cache": "Edge cache",
-  "browser.firefox_cache": "Firefox cache",
-  "win.thumbnail_cache": "Thumbnail cache",
-  "win.update_download_cache": "Windows Update downloads",
-  "win.user_crash_dumps": "Crash dumps",
-  "win.error_reports": "Windows error reports",
-};
 
 let junkReport = null;
 const junkSelected = new Set();
@@ -146,8 +192,8 @@ let junkBlockedRules = new Set();
 let junkHolders = [];
 
 async function junkScan() {
-  $("junk-hero").innerHTML = 'Scanning<span class="dots"></span>';
-  $("junk-sub").textContent = "Looking through known-safe junk locations. Nothing is deleted during a scan.";
+  $("junk-hero").innerHTML = t("scanning") + '<span class="dots"></span>';
+  $("junk-sub").textContent = t("junk_scan_sub");
   $("junk-progress").classList.add("on");
   $("junk-cards").innerHTML = "";
   $("junk-applybar").hidden = true;
@@ -163,7 +209,7 @@ async function junkScan() {
     renderJunk();
   } catch (err) {
     toast(String(err), true);
-    $("junk-hero").textContent = "Scan failed";
+    $("junk-hero").textContent = t("scan_failed");
   } finally {
     $("junk-progress").classList.remove("on");
     $("btn-junk-rescan").disabled = false;
@@ -184,17 +230,15 @@ function renderJunk() {
   const readyBytes = rep.total_bytes - blockedBytes;
   const readyFiles = rep.total_files - blockedFiles;
 
-  $("junk-hero").innerHTML =
-    "<strong>" + esc(fmtBytes(readyBytes)) + "</strong> reclaimable" + (blockedBytes > 0 ? " now" : "");
+  $("junk-hero").innerHTML = tf(blockedBytes > 0 ? "junk_hero_ready_now" : "junk_hero_ready",
+    { b: "<strong>" + esc(fmtBytes(readyBytes)) + "</strong>" });
   if (blockedBytes > 0) {
     // The amber banner already names the holding apps; keep this line short.
-    $("junk-sub").textContent =
-      filesLabel(readyFiles) + " ready to clean now. " + fmtBytes(blockedBytes) +
-      " is held open by running apps (see above).";
+    $("junk-sub").textContent = tf("junk_sub_blocked",
+      { files: filesLabel(readyFiles), blocked: fmtBytes(blockedBytes) });
   } else {
-    $("junk-sub").textContent =
-      fmtCount(rep.total_files) + " junk files across " + rep.rules.length +
-      " locations. This scan was a dry run - review, then clean what you select.";
+    $("junk-sub").textContent = tf("junk_sub_done",
+      { count: fmtCount(rep.total_files), n: rep.rules.length });
   }
 
   const byCat = new Map();
@@ -211,24 +255,23 @@ function renderJunk() {
     // size in grey so it is clear the space is real but currently stuck.
     const selectable = rules.filter((r) => r.files > 0 && !isBlocked(r));
     const catBytes = selectable.reduce((a, r) => a + r.bytes, 0);
-    const anySelectable = selectable.length > 0;
+    const allSelected = selectable.length > 0 && selectable.every((r) => junkSelected.has(r.id));
     html += '<div class="card"><div class="cat-head">' +
       '<label class="chk"><input type="checkbox" data-cat="' + esc(cat) + '"' +
-      (anySelectable ? " checked" : " disabled") + '><span class="box"></span></label>' +
-      '<div class="cat-title">' + esc(cat) + '</div>' +
+      (selectable.length ? (allSelected ? " checked" : "") : " disabled") + '><span class="box"></span></label>' +
+      '<div class="cat-title">' + esc(trCat(cat)) + '</div>' +
       '<div class="cat-bytes">' + esc(fmtBytes(catBytes)) + '</div></div>';
     for (const r of rules) {
-      const name = RULE_NAMES[r.id] || r.id;
       const blocked = isBlocked(r);
       const empty = r.files === 0;
       const disabled = empty || blocked;
       const cls = "rule-row" + (blocked ? " blocked" : empty ? " empty" : "");
-      html += '<div class="' + cls + '" title="' + esc(r.rationale) + '">' +
+      html += '<div class="' + cls + '" title="' + esc(trRationale(r.id, r.rationale)) + '">' +
         '<label class="chk"><input type="checkbox" data-rule="' + esc(r.id) + '" data-cat-of="' + esc(cat) + '"' +
-        (disabled ? " disabled" : " checked") + '><span class="box"></span></label>' +
-        '<div class="rule-detail"><div class="rule-name">' + esc(name) +
-        (blocked ? ' <span class="tag-inuse">in use</span>' : "") +
-        (r.min_age_days > 0 ? ' <span class="rule-count">(older than ' + r.min_age_days + ' days only)</span>' : "") +
+        (disabled ? " disabled" : junkSelected.has(r.id) ? " checked" : "") + '><span class="box"></span></label>' +
+        '<div class="rule-detail"><div class="rule-name">' + esc(trRule(r.id)) +
+        (blocked ? ' <span class="tag-inuse">' + t("in_use") + '</span>' : "") +
+        (r.min_age_days > 0 ? ' <span class="rule-count">' + esc(tf("older_than", { n: r.min_age_days })) + '</span>' : "") +
         '</div><div class="rule-base">' + esc(r.base) + '</div>' +
         '<div class="meter"><i style="width:' + Math.max(1, Math.round((r.bytes / maxBytes) * 100)) + '%"></i></div></div>' +
         '<div class="rule-count">' + filesLabel(r.files) + '</div>' +
@@ -236,7 +279,7 @@ function renderJunk() {
     }
     html += "</div>";
   }
-  if (!rep.rules.length) html = '<div class="hint">No junk locations found on this system.</div>';
+  if (!rep.rules.length) html = '<div class="hint">' + t("junk_none") + '</div>';
   $("junk-cards").innerHTML = html;
 
   document.querySelectorAll('#junk-cards input[data-rule]').forEach((cb) => {
@@ -273,7 +316,10 @@ function junkSelectionChanged() {
     if (junkSelected.has(r.id)) { files += r.files; bytes += r.bytes; }
   });
   $("junk-sel-size").textContent = fmtBytes(bytes);
-  $("junk-sel-files").textContent = filesLabel(files) + " in " + junkSelected.size + (junkSelected.size === 1 ? " rule" : " rules");
+  $("junk-sel-files").textContent = tf("junk_sel", {
+    files: filesLabel(files), n: junkSelected.size,
+    rules: t(junkSelected.size === 1 ? "word_rule" : "word_rules"),
+  });
   $("junk-applybar").hidden = files === 0;
 }
 
@@ -291,16 +337,15 @@ $("btn-junk-clean").addEventListener("click", async () => {
   let files = 0, bytes = 0;
   junkReport.rules.forEach((r) => { if (junkSelected.has(r.id)) { files += r.files; bytes += r.bytes; } });
   const ok = await confirmModal(
-    "Clean junk files?",
-    "Move " + fmtCount(files) + " files (" + fmtBytes(bytes) + ") to the Recycle Bin? " +
-    "Nothing is permanently deleted, and you can undo this from the sidebar.");
+    t("confirm_junk_title"),
+    tf("confirm_junk_body", { files: fmtCount(files), bytes: fmtBytes(bytes) }));
   if (!ok) return;
-  busyShow("Moving to Recycle Bin");
+  busyShow(t("busy_recycle"));
   try {
     const res = await invoke("junk_apply", { ruleIds: [...junkSelected] });
     junkBlockedRules = new Set(res.blocked_rules || []);
     junkHolders = res.holders || [];
-    junkBlockedMsg = showApplyResult(res, "files").blockedMsg;
+    junkBlockedMsg = showApplyResult(res, "noun_files").blockedMsg;
     refreshUndo();
     junkScan();
   } catch (err) {
@@ -351,27 +396,28 @@ function renderDupes() {
   const rep = dupesReport;
   if (!rep.group_count) {
     $("dupes-summary").hidden = true;
-    $("dupes-groups").innerHTML = '<div class="hint">No duplicates found under<br><b>' + esc(rep.root) + '</b></div>';
+    $("dupes-groups").innerHTML = '<div class="hint">' + t("dupes_none") + '<br><b>' + esc(rep.root) + '</b></div>';
     $("dupes-applybar").hidden = true;
     return;
   }
   $("dupes-summary").hidden = false;
   $("dupes-summary").innerHTML =
-    '<div class="sum-item"><div class="k">Groups</div><div class="v">' + fmtCount(rep.group_count) + '</div></div>' +
-    '<div class="sum-item"><div class="k">Redundant copies</div><div class="v">' + fmtCount(rep.redundant_files) + '</div></div>' +
-    '<div class="sum-item"><div class="k">Reclaimable</div><div class="v"><em>' + esc(fmtBytes(rep.total_wasted)) + '</em></div></div>' +
-    (rep.truncated ? '<div class="sum-item"><div class="k">Showing</div><div class="v">top ' + rep.groups.length + '</div></div>' : "");
+    '<div class="sum-item"><div class="k">' + t("sum_groups") + '</div><div class="v">' + fmtCount(rep.group_count) + '</div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_redundant") + '</div><div class="v">' + fmtCount(rep.redundant_files) + '</div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_reclaimable") + '</div><div class="v"><em>' + esc(fmtBytes(rep.total_wasted)) + '</em></div></div>' +
+    (rep.truncated ? '<div class="sum-item"><div class="k">' + t("sum_showing") + '</div><div class="v">' + tf("top_n", { n: rep.groups.length }) + '</div></div>' : "");
 
   let html = "";
   for (const g of rep.groups) {
     html += '<div class="card"><div class="grp-head">' +
-      '<label class="chk"><input type="checkbox" data-group="' + g.index + '" checked><span class="box"></span></label>' +
-      '<div class="grp-title">' + g.members.length + ' identical copies - ' + esc(fmtBytes(g.size)) + ' each</div>' +
+      '<label class="chk"><input type="checkbox" data-group="' + g.index + '"' +
+      (dupesChecked.has(g.index) ? " checked" : "") + '><span class="box"></span></label>' +
+      '<div class="grp-title">' + esc(tf("grp_title", { n: g.members.length, size: fmtBytes(g.size) })) + '</div>' +
       '<span class="grp-hash">' + esc(g.hash12) + '</span>' +
-      '<div class="grp-wasted">' + esc(fmtBytes(g.wasted)) + ' wasted</div></div>';
+      '<div class="grp-wasted">' + esc(tf("grp_wasted", { bytes: fmtBytes(g.wasted) })) + '</div></div>';
     for (const m of g.members) {
       html += '<div class="mem-row">' +
-        (m.keep ? '<span class="badge-keep">KEEP</span>' : '<span class="badge-del">recycle</span>') +
+        (m.keep ? '<span class="badge-keep">' + t("keep") + '</span>' : '<span class="badge-del">' + t("recycle_badge") + '</span>') +
         '<div class="mem-path">' + esc(m.path) + '</div></div>';
     }
     html += "</div>";
@@ -394,7 +440,7 @@ function dupesSelectionChanged() {
     if (dupesChecked.has(g.index)) { bytes += g.wasted; files += g.members.length - 1; }
   });
   $("dupes-sel-size").textContent = fmtBytes(bytes);
-  $("dupes-sel-files").textContent = fmtCount(files) + " redundant copies in " + dupesChecked.size + " groups";
+  $("dupes-sel-files").textContent = tf("dupes_sel", { n: fmtCount(files), g: dupesChecked.size });
   $("dupes-applybar").hidden = files === 0;
 }
 
@@ -404,16 +450,15 @@ $("btn-dupes-clean").addEventListener("click", async () => {
     if (dupesChecked.has(g.index)) { bytes += g.wasted; files += g.members.length - 1; }
   });
   const ok = await confirmModal(
-    "Recycle duplicate copies?",
-    "Move " + fmtCount(files) + " redundant copies (" + fmtBytes(bytes) + ") to the Recycle Bin? " +
-    "The copy marked KEEP always survives in every group.");
+    t("confirm_dupes_title"),
+    tf("confirm_dupes_body", { n: fmtCount(files), bytes: fmtBytes(bytes) }));
   if (!ok) return;
-  busyShow("Moving to Recycle Bin");
+  busyShow(t("busy_recycle"));
   try {
     const res = await invoke("dupes_apply", { groupIndexes: [...dupesChecked] });
-    showApplyResult(res, "copies");
+    showApplyResult(res, "noun_copies");
     refreshUndo();
-    $("dupes-groups").innerHTML = '<div class="hint">Done. Rescan to verify - the folder should now be duplicate-free.</div>';
+    $("dupes-groups").innerHTML = '<div class="hint">' + t("dupes_done") + '</div>';
     $("dupes-summary").hidden = true;
     $("dupes-applybar").hidden = true;
   } catch (err) {
@@ -424,6 +469,7 @@ $("btn-dupes-clean").addEventListener("click", async () => {
 // ------------------------------------------------------------ analyze --
 
 let anPath = null;
+let lastAnalyze = null;
 
 $("btn-an-browse").addEventListener("click", async () => {
   const p = await invoke("pick_folder");
@@ -443,6 +489,7 @@ $("btn-an-scan").addEventListener("click", async () => {
   $("btn-an-scan").disabled = true;
   try {
     const rep = await invoke("analyze_path", { path: anPath });
+    lastAnalyze = rep;
     renderAnalyze(rep);
   } catch (err) {
     toast(String(err), true);
@@ -461,22 +508,25 @@ function meterRow(name, bytes, maxBytes, extra) {
 }
 
 function renderAnalyze(rep) {
-  $("an-hero").innerHTML = "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong> in " + esc(shortRoot(rep.root));
+  $("an-hero").innerHTML = tf("an_hero", {
+    b: "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong>",
+    root: esc(shortRoot(rep.root)),
+  });
   $("an-summary").hidden = false;
   $("an-summary").innerHTML =
-    '<div class="sum-item"><div class="k">Total</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
-    '<div class="sum-item"><div class="k">Files</div><div class="v">' + fmtCount(rep.files) + '</div></div>' +
-    '<div class="sum-item"><div class="k">Folders</div><div class="v">' + fmtCount(rep.dirs) + '</div></div>' +
-    (rep.skipped ? '<div class="sum-item"><div class="k">Unreadable</div><div class="v">' + fmtCount(rep.skipped) + '</div></div>' : "");
+    '<div class="sum-item"><div class="k">' + t("sum_total") + '</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_files") + '</div><div class="v">' + fmtCount(rep.files) + '</div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_folders") + '</div><div class="v">' + fmtCount(rep.dirs) + '</div></div>' +
+    (rep.skipped ? '<div class="sum-item"><div class="k">' + t("sum_unreadable") + '</div><div class="v">' + fmtCount(rep.skipped) + '</div></div>' : "");
 
   const maxF = Math.max(1, ...rep.top_files.map((f) => f.bytes));
-  $("an-files").innerHTML = rep.top_files.map((f) => meterRow(f.path, f.bytes, maxF)).join("") || '<div class="hint">Empty</div>';
+  $("an-files").innerHTML = rep.top_files.map((f) => meterRow(f.path, f.bytes, maxF)).join("") || '<div class="hint">' + t("empty") + '</div>';
   const maxD = Math.max(1, ...rep.top_dirs.map((d) => d.bytes));
-  $("an-dirs").innerHTML = rep.top_dirs.map((d) => meterRow(d.path, d.bytes, maxD, fmtCount(d.files) + " files")).join("") || '<div class="hint">Empty</div>';
+  $("an-dirs").innerHTML = rep.top_dirs.map((d) => meterRow(d.path, d.bytes, maxD, filesLabel(d.files))).join("") || '<div class="hint">' + t("empty") + '</div>';
   const maxE = Math.max(1, ...rep.exts.map((x) => x.bytes));
-  $("an-exts").innerHTML = rep.exts.map((x) => meterRow("." + x.ext, x.bytes, maxE, fmtCount(x.count) + " files")).join("") || '<div class="hint">Empty</div>';
+  $("an-exts").innerHTML = rep.exts.map((x) => meterRow("." + x.ext, x.bytes, maxE, filesLabel(x.count))).join("") || '<div class="hint">' + t("empty") + '</div>';
   const maxA = Math.max(1, ...rep.ages.map((a) => a.bytes));
-  $("an-ages").innerHTML = rep.ages.map((a) => meterRow(a.label, a.bytes, maxA, fmtCount(a.count) + " files")).join("");
+  $("an-ages").innerHTML = rep.ages.map((a) => meterRow(trAge(a.label), a.bytes, maxA, filesLabel(a.count))).join("");
   $("an-panels").hidden = false;
 }
 
@@ -529,33 +579,36 @@ function renderDev() {
   if (!rep.project_count) {
     $("dev-summary").hidden = true;
     $("dev-projects").innerHTML =
-      '<div class="hint">No developer projects with reclaimable folders found under<br><b>' +
-      esc(rep.root) + '</b><br><br>Clean Master looks for node_modules, target, build, venvs and bin/obj that sit next to a project manifest.</div>';
+      '<div class="hint">' + t("dev_none") + '<br><b>' +
+      esc(rep.root) + '</b><br><br>' + t("dev_none_hint") + '</div>';
     $("dev-applybar").hidden = true;
     return;
   }
-  $("dev-hero").innerHTML = "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong> in build &amp; dependency folders";
+  $("dev-hero").innerHTML = tf("dev_hero", { b: "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong>" });
   $("dev-summary").hidden = false;
   $("dev-summary").innerHTML =
-    '<div class="sum-item"><div class="k">Projects</div><div class="v">' + fmtCount(rep.project_count) + '</div></div>' +
-    '<div class="sum-item"><div class="k">Artifact folders</div><div class="v">' + fmtCount(rep.artifact_count) + '</div></div>' +
-    '<div class="sum-item"><div class="k">Reclaimable</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
-    (rep.truncated ? '<div class="sum-item"><div class="k">Showing</div><div class="v">top ' + rep.projects.length + '</div></div>' : "");
+    '<div class="sum-item"><div class="k">' + t("sum_projects") + '</div><div class="v">' + fmtCount(rep.project_count) + '</div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_artifacts") + '</div><div class="v">' + fmtCount(rep.artifact_count) + '</div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_reclaimable") + '</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
+    (rep.truncated ? '<div class="sum-item"><div class="k">' + t("sum_showing") + '</div><div class="v">' + tf("top_n", { n: rep.projects.length }) + '</div></div>' : "");
 
   let html = "";
   for (const p of rep.projects) {
+    const allChecked = p.artifacts.length > 0 && p.artifacts.every((a) => devChecked.has(a.index));
     html += '<div class="card"><div class="cat-head">' +
-      '<label class="chk"><input type="checkbox" data-proj="' + esc(p.root) + '"><span class="box"></span></label>' +
+      '<label class="chk"><input type="checkbox" data-proj="' + esc(p.root) + '"' +
+      (allChecked ? " checked" : "") + '><span class="box"></span></label>' +
       '<div class="cat-title">' + esc(p.name) + ' <span class="proj-path">' + esc(p.root) + '</span></div>' +
       '<div class="cat-bytes">' + esc(fmtBytes(p.total_bytes)) + '</div></div>';
     for (const a of p.artifacts) {
       const badge = (DEV_KIND_ICON[a.kind_id] || "dev").toUpperCase();
       html += '<div class="rule-row" title="' + esc(a.path) + '">' +
-        '<label class="chk"><input type="checkbox" data-art="' + a.index + '" data-proj-of="' + esc(p.root) + '"><span class="box"></span></label>' +
+        '<label class="chk"><input type="checkbox" data-art="' + a.index + '" data-proj-of="' + esc(p.root) + '"' +
+        (devChecked.has(a.index) ? " checked" : "") + '><span class="box"></span></label>' +
         '<span class="kind-badge">' + esc(badge) + '</span>' +
         '<div class="rule-detail"><div class="rule-name">' + esc(a.dir_name) +
-        ' <span class="rule-count">' + esc(a.kind_label) + '</span></div>' +
-        '<div class="rule-base">restored by ' + esc(a.restore_hint) + '</div></div>' +
+        ' <span class="rule-count">' + esc(trKind(a.kind_id, a.kind_label)) + '</span></div>' +
+        '<div class="rule-base">' + esc(tf("restored_by", { hint: trHint(a.restore_hint) })) + '</div></div>' +
         '<div class="rule-count">' + filesLabel(a.files) + '</div>' +
         '<div class="rule-bytes">' + esc(fmtBytes(a.bytes)) + '</div></div>';
     }
@@ -595,9 +648,9 @@ function devSelectionChanged() {
   devReport.projects.forEach((p) => p.artifacts.forEach((a) => byIndex.set(a.index, a)));
   devChecked.forEach((i) => { const a = byIndex.get(i); if (a) bytes += a.bytes; });
   $("dev-sel-size").textContent = fmtBytes(bytes);
-  $("dev-sel-files").textContent = devChecked.size
-    ? filesLabel(devChecked.size).replace(/files?$/, devChecked.size === 1 ? "folder" : "folders") + " selected"
-    : "nothing selected";
+  $("dev-sel-files").textContent = devChecked.size === 0
+    ? t("nothing_selected")
+    : devChecked.size === 1 ? t("folder_selected") : tf("folders_selected", { n: devChecked.size });
   $("dev-applybar").hidden = devChecked.size === 0;
 }
 
@@ -608,16 +661,18 @@ $("btn-dev-clean").addEventListener("click", async () => {
   devChecked.forEach((i) => { const a = byIndex.get(i); if (a) bytes += a.bytes; });
   const n = devChecked.size;
   const ok = await confirmModal(
-    "Recycle developer folders?",
-    "Move " + n + " build/dependency folder" + (n === 1 ? "" : "s") + " (" + fmtBytes(bytes) + ") to the Recycle Bin? " +
-    "These are regenerable (npm install, cargo build, etc.) and your source code is not affected.");
+    t("confirm_dev_title"),
+    tf("confirm_dev_body", {
+      n, bytes: fmtBytes(bytes),
+      folders: t(n === 1 ? "word_folder" : "word_folders"),
+    }));
   if (!ok) return;
-  busyShow("Moving folders to Recycle Bin");
+  busyShow(t("busy_recycle_folders"));
   try {
     const res = await invoke("dev_apply", { artifactIndexes: [...devChecked] });
-    showApplyResult(res, "folders");
+    showApplyResult(res, "noun_folders");
     refreshUndo();
-    $("dev-projects").innerHTML = '<div class="hint">Done. Rescan to see the current state.</div>';
+    $("dev-projects").innerHTML = '<div class="hint">' + t("dev_done") + '</div>';
     $("dev-summary").hidden = true;
     $("dev-applybar").hidden = true;
   } catch (err) {
@@ -633,7 +688,7 @@ async function refreshUndo() {
     if (st && st.files > 0) {
       $("undo-card").hidden = false;
       $("undo-meta").textContent =
-        fmtCount(st.files) + " files - " + fmtBytes(st.bytes) + "\n" + timeAgo(st.at_unix);
+        filesLabel(st.files) + " - " + fmtBytes(st.bytes) + "\n" + timeAgo(st.at_unix);
     } else {
       $("undo-card").hidden = true;
     }
@@ -642,15 +697,15 @@ async function refreshUndo() {
 
 $("btn-undo").addEventListener("click", async () => {
   const ok = await confirmModal(
-    "Undo last clean?",
-    "Restore the files from the last clean out of the Recycle Bin, back to their original locations.",
-    "Restore files");
+    t("undo_confirm_title"),
+    t("undo_confirm_body"),
+    t("restore_files"));
   if (!ok) return;
-  busyShow("Restoring from Recycle Bin");
+  busyShow(t("busy_restore"));
   try {
     const res = await invoke("undo_last");
-    toast("Restored " + fmtCount(res.restored) + " files." +
-      (res.missing ? " " + fmtCount(res.missing) + " were no longer in the Recycle Bin." : ""));
+    toast(tf("toast_restored", { n: fmtCount(res.restored) }) +
+      (res.missing ? " " + tf("toast_missing", { n: fmtCount(res.missing) }) : ""));
     refreshUndo();
   } catch (err) {
     toast(String(err), true);
@@ -659,5 +714,6 @@ $("btn-undo").addEventListener("click", async () => {
 
 // --------------------------------------------------------------- init --
 
+applyStatic();
 refreshUndo();
 junkScan();
