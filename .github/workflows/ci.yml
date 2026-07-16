@@ -30,3 +30,20 @@ jobs:
         run: cargo test --workspace
       - name: Release build (CLI + GUI)
         run: cargo build --release -p clean-cli -p clean-gui
+
+      # macOS only: produce the Clean Master.app bundle and publish it as
+      # a downloadable artifact. Zip via ditto so the executable bits and
+      # bundle structure survive upload-artifact.
+      - name: Bundle Clean Master.app
+        if: runner.os == 'macOS'
+        run: |
+          npm install -g @tauri-apps/cli@^2
+          cd crates/clean-gui
+          tauri build
+          ditto -c -k --keepParent "../../target/release/bundle/macos/Clean Master.app" "../../CleanMaster-macos-arm64.zip"
+      - name: Upload .app artifact
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: CleanMaster-macos-arm64
+          path: CleanMaster-macos-arm64.zip
