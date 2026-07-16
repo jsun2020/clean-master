@@ -150,14 +150,16 @@ mod tests {
 
     const NOW: i64 = 1_800_000_000;
 
+    // Forward slashes are valid separators on Windows too; backslash paths
+    // would be a single opaque component on unix and break these tests.
     fn fixture() -> Vec<FileRecord> {
         vec![
-            rec(0, r"C:\root\docs", 0, NOW, true),
-            rec(1, r"C:\root\docs\big.pdf", 5000, NOW - 10 * 86400, false),
-            rec(2, r"C:\root\docs\old.pdf", 3000, NOW - 400 * 86400, false),
-            rec(3, r"C:\root\cache", 0, NOW, true),
-            rec(4, r"C:\root\cache\a.log", 1000, NOW - 50 * 86400, false),
-            rec(5, r"C:\root\noext", 200, NOW - 900 * 86400, false),
+            rec(0, "/root/docs", 0, NOW, true),
+            rec(1, "/root/docs/big.pdf", 5000, NOW - 10 * 86400, false),
+            rec(2, "/root/docs/old.pdf", 3000, NOW - 400 * 86400, false),
+            rec(3, "/root/cache", 0, NOW, true),
+            rec(4, "/root/cache/a.log", 1000, NOW - 50 * 86400, false),
+            rec(5, "/root/noext", 200, NOW - 900 * 86400, false),
         ]
     }
 
@@ -173,7 +175,7 @@ mod tests {
     #[test]
     fn top_dirs_cumulative() {
         let recs = fixture();
-        let dirs = top_dirs(&recs, r"C:\root", 10);
+        let dirs = top_dirs(&recs, "/root", 10);
         let docs = dirs.iter().find(|d| d.path.ends_with("docs")).unwrap();
         assert_eq!(docs.bytes, 8000);
         assert_eq!(docs.files, 2);
