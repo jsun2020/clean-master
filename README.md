@@ -87,6 +87,23 @@ The macOS build is developed on Windows and verified via `cargo check/clippy
 --target aarch64-apple-darwin` plus the macOS CI runner; run the GUI smoke
 test on real hardware before distributing Mac binaries.
 
+### macOS .app bundle
+
+CI's macOS job also produces **Clean Master.app** (Apple Silicon) and
+uploads it as the `CleanMaster-macos-arm64` artifact on every push. To
+build it locally on a Mac:
+
+```
+npm install -g @tauri-apps/cli
+cd crates/clean-gui && tauri build     # -> target/release/bundle/macos/Clean Master.app
+```
+
+The bundle is unsigned (no Apple Developer certificate), so Gatekeeper
+will quarantine a downloaded copy - either right-click > Open once, or
+`xattr -cr "Clean Master.app"` after unzipping. Icon ships as
+`icons/icon.icns` (same emerald mark as the Windows .ico, regenerated at
+up to 1024 px).
+
 ## Measured performance (Win10, corporate EDR active)
 
 - 1.51M entries (`%LOCALAPPDATA%`) scanned in ~17 s; ~120k entries/s.
