@@ -1,12 +1,12 @@
 # CleanCLI (`clean`) + Clean Master (GUI)
 
-Fast, safe, portable disk cleaning for Windows. No install, no telemetry.
-Two front ends over the same engine:
+Fast, safe, portable disk cleaning for Windows and macOS. No install, no
+telemetry. Two front ends over the same engine:
 
-- `clean.exe` - the CLI (~3 MB)
-- `clean-master.exe` - **Clean Master**, the desktop GUI (Tauri 2, single
-  portable exe; assets embedded, no WebView bundled - uses the system
-  WebView2 runtime present on Windows 10/11)
+- `clean` / `clean.exe` - the CLI (~3 MB)
+- `clean-master` / `clean-master.exe` - **Clean Master**, the desktop GUI
+  (Tauri 2, single portable binary; assets embedded, no WebView bundled -
+  uses the system WebView2 runtime on Windows 10/11, WKWebView on macOS)
 
 See `prd.md` for the full product definition.
 
@@ -56,9 +56,10 @@ clean rules list              # every junk rule + why it is safe
 - Junk rules only ever match inside their documented base directory and skip
   recently-modified files. Duplicates: full-content BLAKE3 verification, and
   one copy of every group always survives.
-- Protected roots (Windows, Program Files, ProgramData) are never touched
-  except where a junk rule explicitly authorizes its own base (e.g.
-  `C:\Windows\Temp`).
+- Protected roots are never touched except where a junk rule explicitly
+  authorizes its own base (e.g. `C:\Windows\Temp`). Windows: `C:\Windows`,
+  Program Files, ProgramData. macOS: `/System`, `/Library`, `/Applications`,
+  `/usr`, `/bin`, `/sbin`, `/etc`, `/private/etc`, `/private/var/db`.
 
 ## Build
 
@@ -70,6 +71,21 @@ cargo test                   # unit tests
 Workspace layout: `crates/clean-core` is the engine library (no terminal
 I/O), `crates/clean-cli` is the thin CLI binary, `crates/clean-gui` is the
 Clean Master desktop app (static HTML/CSS/JS frontend, no Node toolchain).
+
+## Platform support
+
+| | Windows | macOS |
+|---|---|---|
+| Junk rule pack | `rules/windows.json` (9 rules) | `rules/macos.json` (5 rules: TMPDIR, `~/Library/Caches`, Logs, Saved Application State, Xcode DerivedData) |
+| Deletion | Recycle Bin (`trash` crate) | Trash (`trash` crate) |
+| Undo | One-click restore from the Recycle Bin | Not available programmatically (the `trash` crate cannot enumerate the macOS Trash) - use Finder's **Put Back** |
+| "File in use" explanation | Restart Manager names the holding apps | Not applicable (POSIX deletes don't block on open handles) |
+| Undo manifests | `%LOCALAPPDATA%\CleanMaster` | `~/Library/Application Support/CleanMaster` |
+
+CI (`.github/workflows/ci.yml`) builds and tests both OSes on every push.
+The macOS build is developed on Windows and verified via `cargo check/clippy
+--target aarch64-apple-darwin` plus the macOS CI runner; run the GUI smoke
+test on real hardware before distributing Mac binaries.
 
 ## Measured performance (Win10, corporate EDR active)
 

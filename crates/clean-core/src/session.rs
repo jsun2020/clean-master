@@ -58,7 +58,11 @@ impl Session {
     }
 
     pub fn total_file_bytes(&self) -> u64 {
-        self.records.iter().filter(|r| !r.is_dir).map(|r| r.size).sum()
+        self.records
+            .iter()
+            .filter(|r| !r.is_dir)
+            .map(|r| r.size)
+            .sum()
     }
 
     pub fn file_count(&self) -> usize {

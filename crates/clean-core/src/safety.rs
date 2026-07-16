@@ -3,6 +3,7 @@
 //! protected paths untouchable, every apply writes an undo manifest.
 
 use crate::error::CoreError;
+#[cfg(windows)]
 use crate::rules::expand_env;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -10,12 +11,39 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Directories that user-initiated deletions (duplicates) must never touch.
 /// Junk rules may whitelist their own base (e.g. C:\Windows\Temp) explicitly.
+#[cfg(windows)]
 pub fn protected_roots() -> Vec<PathBuf> {
-    ["%WINDIR%", "%ProgramFiles%", "%ProgramFiles(x86)%", "%ProgramData%"]
-        .iter()
-        .filter_map(|v| expand_env(v))
-        .map(PathBuf::from)
-        .collect()
+    [
+        "%WINDIR%",
+        "%ProgramFiles%",
+        "%ProgramFiles(x86)%",
+        "%ProgramData%",
+    ]
+    .iter()
+    .filter_map(|v| expand_env(v))
+    .map(PathBuf::from)
+    .collect()
+}
+
+/// OS and installed applications. `/Library` is the system-wide library;
+/// the per-user `~/Library` is intentionally NOT here (junk rule bases
+/// live under it and are whitelisted per rule).
+#[cfg(not(windows))]
+pub fn protected_roots() -> Vec<PathBuf> {
+    [
+        "/System",
+        "/Library",
+        "/Applications",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/private/etc",
+        "/private/var/db",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .collect()
 }
 
 /// True when `path` may be deleted: not under a protected root, unless it is
@@ -205,10 +233,13 @@ pub fn undo(manifest: &ActionManifest) -> Result<UndoOutcome, CoreError> {
     })
 }
 
+/// The `trash` crate cannot enumerate or restore Trash items on macOS,
+/// so programmatic undo is Windows-only. Items are still recoverable by
+/// hand: open the Trash in Finder and use "Put Back".
 #[cfg(not(windows))]
 pub fn undo(_manifest: &ActionManifest) -> Result<UndoOutcome, CoreError> {
     Err(CoreError::Session(
-        "undo is only supported on Windows in the MVP".into(),
+        "undo is not available on this platform; open the Trash in Finder and use Put Back".into(),
     ))
 }
 
@@ -400,6 +431,21 @@ mod tests {
         assert!(deletion_allowed(&temp_file, &[temp_base]));
         // whitelisting Temp does not open the rest of Windows
         assert!(!deletion_allowed(&inside, &[Path::new(&win).join("Temp")]));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn protected_roots_block_deletion_unix() {
+        assert!(!deletion_allowed(
+            Path::new("/System/Library/CoreServices/Finder.app"),
+            &[]
+        ));
+        assert!(!deletion_allowed(Path::new("/usr/lib/dyld"), &[]));
+        // Per-user Library stays deletable (junk rule bases live there).
+        assert!(deletion_allowed(
+            Path::new("/Users/someone/Library/Caches/app/blob"),
+            &[]
+        ));
     }
 
     #[test]

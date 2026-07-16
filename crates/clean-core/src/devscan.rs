@@ -71,7 +71,12 @@ fn catalog() -> &'static [ArtifactKind] {
             label: "Gradle build output",
             dir_name: "build",
             detect: Detect::SiblingMarker,
-            markers: &["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"],
+            markers: &[
+                "build.gradle",
+                "build.gradle.kts",
+                "settings.gradle",
+                "settings.gradle.kts",
+            ],
             restore_hint: "gradle build",
         },
         ArtifactKind {
@@ -79,7 +84,12 @@ fn catalog() -> &'static [ArtifactKind] {
             label: "Gradle local cache",
             dir_name: ".gradle",
             detect: Detect::SiblingMarker,
-            markers: &["build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"],
+            markers: &[
+                "build.gradle",
+                "build.gradle.kts",
+                "settings.gradle",
+                "settings.gradle.kts",
+            ],
             restore_hint: "gradle build",
         },
         ArtifactKind {
@@ -312,7 +322,11 @@ pub fn scan_projects(root: &Path, progress: &(dyn Fn(u64) + Sync)) -> Vec<DevPro
         .collect();
 
     // Biggest projects first; ties broken by path for determinism.
-    projects.sort_by(|a, b| b.total_bytes.cmp(&a.total_bytes).then_with(|| a.root.cmp(&b.root)));
+    projects.sort_by(|a, b| {
+        b.total_bytes
+            .cmp(&a.total_bytes)
+            .then_with(|| a.root.cmp(&b.root))
+    });
     projects
 }
 
@@ -334,7 +348,14 @@ mod tests {
         let root = dir.path();
         // A real project: package.json + node_modules with content.
         touch(&root.join("app").join("package.json"), 50);
-        touch(&root.join("app").join("node_modules").join("left-pad").join("index.js"), 1000);
+        touch(
+            &root
+                .join("app")
+                .join("node_modules")
+                .join("left-pad")
+                .join("index.js"),
+            1000,
+        );
         touch(&root.join("app").join("src").join("main.js"), 200);
         // A decoy: a node_modules with NO package.json beside it (must be ignored).
         touch(&root.join("decoy").join("node_modules").join("x.js"), 9999);
@@ -356,8 +377,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         touch(&root.join("package.json"), 10);
-        touch(&root.join("node_modules").join("a").join("package.json"), 10);
-        touch(&root.join("node_modules").join("a").join("node_modules").join("b.js"), 500);
+        touch(
+            &root.join("node_modules").join("a").join("package.json"),
+            10,
+        );
+        touch(
+            &root
+                .join("node_modules")
+                .join("a")
+                .join("node_modules")
+                .join("b.js"),
+            500,
+        );
         let projects = scan_projects(root, &|_| {});
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].artifacts.len(), 1);
@@ -370,9 +401,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         touch(&root.join("rustproj").join("Cargo.toml"), 10);
-        touch(&root.join("rustproj").join("target").join("debug").join("bin.exe"), 2000);
+        touch(
+            &root
+                .join("rustproj")
+                .join("target")
+                .join("debug")
+                .join("bin.exe"),
+            2000,
+        );
         touch(&root.join("mavenproj").join("pom.xml"), 10);
-        touch(&root.join("mavenproj").join("target").join("classes").join("A.class"), 3000);
+        touch(
+            &root
+                .join("mavenproj")
+                .join("target")
+                .join("classes")
+                .join("A.class"),
+            3000,
+        );
 
         let projects = scan_projects(root, &|_| {});
         let kinds: Vec<&str> = projects
@@ -388,7 +433,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         touch(&root.join("proj").join(".venv").join("pyvenv.cfg"), 20);
-        touch(&root.join("proj").join(".venv").join("Lib").join("site.py"), 4000);
+        touch(
+            &root.join("proj").join(".venv").join("Lib").join("site.py"),
+            4000,
+        );
         touch(&root.join("proj").join("main.py"), 100);
 
         let projects = scan_projects(root, &|_| {});
@@ -403,7 +451,14 @@ mod tests {
         let root = dir.path();
         touch(&root.join("proj").join("package.json"), 10);
         // A node_modules buried inside .git must never surface.
-        touch(&root.join("proj").join(".git").join("node_modules").join("x.js"), 5000);
+        touch(
+            &root
+                .join("proj")
+                .join(".git")
+                .join("node_modules")
+                .join("x.js"),
+            5000,
+        );
         let projects = scan_projects(root, &|_| {});
         assert!(projects.is_empty(), ".git subtree must be skipped entirely");
     }

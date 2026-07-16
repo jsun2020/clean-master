@@ -77,7 +77,14 @@ pub fn report(dry: bool) -> (Vec<(String, u64)>, Vec<std::path::PathBuf>) {
 pub fn list_rules() {
     let mut t = Table::new();
     t.load_preset(UTF8_FULL_CONDENSED);
-    t.set_header(vec!["Rule", "Category", "Risk", "Min age", "Location", "Why it is safe"]);
+    t.set_header(vec![
+        "Rule",
+        "Category",
+        "Risk",
+        "Min age",
+        "Location",
+        "Why it is safe",
+    ]);
     for rule in rules::builtin_rules() {
         let base = rules::expand_env(&rule.base).unwrap_or_else(|| rule.base.clone());
         t.add_row(vec![
