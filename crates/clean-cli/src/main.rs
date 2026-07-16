@@ -29,7 +29,7 @@ struct Cli {
 enum Cmd {
     /// Scan a folder or drive and cache the result in a session file
     Scan {
-        /// Root to scan, e.g. C:\ or D:\Projects
+        /// Root to scan, e.g. C:\ or D:\Projects (Windows), ~/Projects (macOS)
         path: PathBuf,
         /// Glob pattern(s) to exclude (repeatable), e.g. --exclude *.iso
         #[arg(long = "exclude")]
@@ -126,7 +126,9 @@ fn main() -> ExitCode {
             yes,
         ),
         Cmd::Undo { manifest } => cmd_undo(manifest),
-        Cmd::Rules { cmd: RulesCmd::List } => {
+        Cmd::Rules {
+            cmd: RulesCmd::List,
+        } => {
             junk::list_rules();
             Ok(())
         }
@@ -144,8 +146,7 @@ fn cmd_scan(path: PathBuf, excludes: Vec<String>, output: Option<PathBuf>) -> Re
     let output = output.unwrap_or_else(|| PathBuf::from(DEFAULT_SESSION_FILE));
     let bar = ProgressBar::new_spinner();
     bar.set_style(
-        ProgressStyle::with_template("{spinner} scanning... {msg}")
-            .expect("valid template"),
+        ProgressStyle::with_template("{spinner} scanning... {msg}").expect("valid template"),
     );
     bar.enable_steady_tick(Duration::from_millis(120));
 
@@ -165,8 +166,14 @@ fn cmd_scan(path: PathBuf, excludes: Vec<String>, output: Option<PathBuf>) -> Re
     println!("Scan complete: {}", session.root);
     println!("  files:    {}", session.file_count());
     println!("  dirs:     {}", session.dir_count());
-    println!("  size:     {}", fmt::human_bytes(session.total_file_bytes()));
-    println!("  skipped:  {} (access denied / unreadable)", session.skipped.len());
+    println!(
+        "  size:     {}",
+        fmt::human_bytes(session.total_file_bytes())
+    );
+    println!(
+        "  skipped:  {} (access denied / unreadable)",
+        session.skipped.len()
+    );
     println!("  elapsed:  {:.1}s", elapsed.as_secs_f64());
     println!("  session:  {}", output.display());
     println!();

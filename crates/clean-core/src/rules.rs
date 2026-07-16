@@ -8,6 +8,7 @@ use std::path::Path;
 /// Embedded rule packs. A rule ships only if its target is regenerable
 /// (caches, temp, thumbnails) or debugging leftovers (dumps, reports).
 const WINDOWS_PACK: &str = include_str!("../rules/windows.json");
+const MACOS_PACK: &str = include_str!("../rules/macos.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,10 +71,21 @@ pub struct JunkFinding {
     pub risk: RiskTier,
 }
 
-pub fn builtin_rules() -> Vec<JunkRule> {
-    let pack: RulePack =
-        serde_json::from_str(WINDOWS_PACK).expect("embedded rule pack must parse");
+fn parse_pack(json: &str) -> Vec<JunkRule> {
+    let pack: RulePack = serde_json::from_str(json).expect("embedded rule pack must parse");
     pack.rules
+}
+
+/// Rules for the OS this binary was built for. Other platforms get an
+/// empty set (junk scan finds nothing rather than guessing at paths).
+pub fn builtin_rules() -> Vec<JunkRule> {
+    if cfg!(windows) {
+        parse_pack(WINDOWS_PACK)
+    } else if cfg!(target_os = "macos") {
+        parse_pack(MACOS_PACK)
+    } else {
+        Vec::new()
+    }
 }
 
 /// Expand %VAR% placeholders from the environment.
@@ -178,9 +190,9 @@ pub fn evaluate_all_with_progress(
         if !base_path.is_dir() {
             continue;
         }
-        let Ok(outcome) =
-            WalkBackend.scan(base_path, &ScanOptions::default(), &|seen| progress(&rule.id, seen))
-        else {
+        let Ok(outcome) = WalkBackend.scan(base_path, &ScanOptions::default(), &|seen| {
+            progress(&rule.id, seen)
+        }) else {
             continue;
         };
         let Ok(findings) = evaluate_records(rule, base_path, &outcome.records, now_unix) else {
@@ -226,10 +238,40 @@ mod tests {
 
     #[test]
     fn builtin_pack_parses_and_is_safe_tier_only() {
+        // The active pack for this build target.
         let rules = builtin_rules();
-        assert!(rules.len() >= 8);
+        assert!(rules.len() >= 5);
         assert!(rules.iter().all(|r| r.risk == RiskTier::Safe));
         assert!(rules.iter().all(|r| !r.include.is_empty()));
+    }
+
+    #[test]
+    fn all_embedded_packs_parse_and_bases_never_nest() {
+        // Validate every shipped pack on every platform, not just the
+        // active one, so a bad pack cannot slip through CI on the other OS.
+        for (name, json, min_rules) in [("windows", WINDOWS_PACK, 8), ("macos", MACOS_PACK, 5)] {
+            let rules = parse_pack(json);
+            assert!(rules.len() >= min_rules, "{name}: too few rules");
+            assert!(rules.iter().all(|r| r.risk == RiskTier::Safe), "{name}");
+            assert!(rules.iter().all(|r| !r.include.is_empty()), "{name}");
+            // One rule's base nested inside another's would double-count
+            // the same files in per-rule totals.
+            for a in &rules {
+                for b in &rules {
+                    if a.id == b.id {
+                        continue;
+                    }
+                    let prefix_slash = format!("{}/", b.base);
+                    let prefix_bslash = format!("{}\\", b.base);
+                    assert!(
+                        !a.base.starts_with(&prefix_slash) && !a.base.starts_with(&prefix_bslash),
+                        "{name}: base of {} nests inside base of {}",
+                        a.id,
+                        b.id
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -238,14 +280,17 @@ mod tests {
         let base = dir.path().join("profile");
         fs::create_dir_all(base.join("Cache").join("data")).unwrap();
         fs::create_dir_all(base.join("Documents")).unwrap();
-        fs::write(base.join("Cache").join("data").join("f_0001"), vec![0u8; 100]).unwrap();
+        fs::write(
+            base.join("Cache").join("data").join("f_0001"),
+            vec![0u8; 100],
+        )
+        .unwrap();
         fs::write(base.join("Documents").join("thesis.docx"), vec![0u8; 100]).unwrap();
 
         let records = scan_records(&base);
         // File modified "now" but min_age 0 allows it.
         let findings =
-            evaluate_records(&rule(&["Cache/**"], 0), &base, &records, NOW + 10 * 86_400)
-                .unwrap();
+            evaluate_records(&rule(&["Cache/**"], 0), &base, &records, NOW + 10 * 86_400).unwrap();
         assert_eq!(findings.len(), 1);
         assert!(findings[0].record.path.ends_with("f_0001"));
     }
@@ -271,8 +316,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("sub")).unwrap();
         fs::write(dir.path().join("sub").join("a.tmp"), b"x").unwrap();
         let records = scan_records(dir.path());
-        let findings =
-            evaluate_records(&rule(&["**"], 0), dir.path(), &records, NOW * 2).unwrap();
+        let findings = evaluate_records(&rule(&["**"], 0), dir.path(), &records, NOW * 2).unwrap();
         assert!(findings.iter().all(|f| !f.record.is_dir));
         assert_eq!(findings.len(), 1);
     }

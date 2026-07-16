@@ -45,12 +45,21 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
-/// Undo manifests live in a stable per-user location, independent of cwd.
+/// Undo manifests live in a stable per-user location, independent of cwd:
+/// %LOCALAPPDATA% on Windows, ~/Library/Application Support on macOS.
 fn manifest_dir() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    let dir = base.join("CleanMaster");
+    let base = if cfg!(windows) {
+        std::env::var("LOCALAPPDATA").map(PathBuf::from).ok()
+    } else if cfg!(target_os = "macos") {
+        std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join("Library").join("Application Support"))
+            .ok()
+    } else {
+        std::env::var("HOME")
+            .map(|h| PathBuf::from(h).join(".local").join("share"))
+            .ok()
+    };
+    let dir = base.unwrap_or_else(std::env::temp_dir).join("CleanMaster");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -299,7 +308,11 @@ async fn junk_apply(
 
     let (requested, outcome, manifest) = result;
     // Results are now stale: force a rescan before the next apply.
-    state.junk.lock().map_err(|_| "state lock poisoned")?.clear();
+    state
+        .junk
+        .lock()
+        .map_err(|_| "state lock poisoned")?
+        .clear();
     let holders = failure_holders(&outcome.failed);
     let mut blocked_rules: Vec<String> = Vec::new();
     for (p, _) in &outcome.failed {
@@ -442,7 +455,11 @@ async fn dupes_apply(
     .await
     .map_err(|e| format!("apply task failed: {e}"))?;
 
-    state.dupes.lock().map_err(|_| "state lock poisoned")?.clear();
+    state
+        .dupes
+        .lock()
+        .map_err(|_| "state lock poisoned")?
+        .clear();
     let holders = failure_holders(&outcome.failed);
     Ok(ApplyDto {
         requested,
@@ -714,10 +731,7 @@ async fn undo_last() -> Result<UndoResultDto, String> {
         let m = ActionManifest::load(&path).map_err(|e| e.to_string())?;
         let out = clean_core::safety::undo(&m).map_err(|e| e.to_string())?;
         // Retire the manifest so "undo last" moves on to the previous apply.
-        let done = path.with_file_name(format!(
-            "undone-{}.json",
-            m.session_id
-        ));
+        let done = path.with_file_name(format!("undone-{}.json", m.session_id));
         let _ = std::fs::rename(&path, done);
         Ok(UndoResultDto {
             restored: out.restored,
