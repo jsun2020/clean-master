@@ -31,6 +31,10 @@ Three screens, same safety contract as the CLI:
 - **Undo** - every clean writes a manifest to `%LOCALAPPDATA%\CleanMaster`;
   the sidebar restores the last clean from the Recycle Bin in one click.
 
+The interface is available in **English and Simplified Chinese** - use the
+EN | 中文 toggle at the bottom of the sidebar. The first launch follows the
+system language; the choice is remembered afterwards.
+
 The webview only ever selects rule ids / group indexes - deletion targets are
 re-derived and re-validated (protected roots, keeper-survives) in Rust.
 

@@ -25,29 +25,33 @@
     <nav class="nav">
       <button class="nav-item active" data-view="junk">
         <svg viewBox="0 0 20 20"><path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        Junk Clean
+        <span data-i18n="nav_junk">Junk Clean</span>
       </button>
       <button class="nav-item" data-view="dupes">
         <svg viewBox="0 0 20 20"><rect x="3" y="3" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 17h7a2 2 0 0 0 2-2V7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        Duplicates
+        <span data-i18n="nav_dupes">Duplicates</span>
       </button>
       <button class="nav-item" data-view="analyze">
         <svg viewBox="0 0 20 20"><path d="M3 17V9M8 17V4M13 17v-6M18 17V7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-        Space Analyze
+        <span data-i18n="nav_analyze">Space Analyze</span>
       </button>
       <button class="nav-item" data-view="dev">
         <svg viewBox="0 0 20 20"><path d="M7 6l-4 4 4 4M13 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        Developer
+        <span data-i18n="nav_dev">Developer</span>
       </button>
     </nav>
 
     <div class="side-foot">
       <div class="undo-card" id="undo-card" hidden>
-        <div class="undo-title">Last clean</div>
+        <div class="undo-title" data-i18n="undo_title">Last clean</div>
         <div class="undo-meta" id="undo-meta">-</div>
-        <button class="btn ghost small" id="btn-undo">Undo to Recycle Bin</button>
+        <button class="btn ghost small" id="btn-undo" data-i18n="undo_btn">Undo to Recycle Bin</button>
       </div>
-      <div class="side-note">Dry run by default.<br>Deletes go to the Recycle Bin.</div>
+      <div class="lang-switch" role="group" aria-label="Language">
+        <button class="lang-btn" data-lang="en">EN</button>
+        <button class="lang-btn" data-lang="zh">中文</button>
+      </div>
+      <div class="side-note" data-i18n-html="side_note">Dry run by default.<br>Deletes go to the Recycle Bin.</div>
     </div>
   </aside>
 
@@ -62,7 +66,7 @@
           <p class="hero-sub" id="junk-sub">Looking through known-safe junk locations. Nothing is deleted during a scan.</p>
         </div>
         <div class="head-actions">
-          <button class="btn ghost" id="btn-junk-rescan">Rescan</button>
+          <button class="btn ghost" id="btn-junk-rescan" data-i18n="rescan">Rescan</button>
         </div>
       </header>
 
@@ -74,7 +78,7 @@
 
       <div class="apply-bar" id="junk-applybar" hidden>
         <div class="apply-info"><strong id="junk-sel-size">0 B</strong><span id="junk-sel-files">0 files selected</span></div>
-        <button class="btn primary" id="btn-junk-clean">Clean selected</button>
+        <button class="btn primary" id="btn-junk-clean" data-i18n="clean_selected">Clean selected</button>
       </div>
     </section>
 
@@ -82,21 +86,21 @@
     <section class="view" id="view-dupes" hidden>
       <header class="head">
         <div>
-          <h1 class="hero-num" id="dupes-hero">Duplicates</h1>
-          <p class="hero-sub" id="dupes-sub">Pick a folder. Files are grouped only after full-content verification (BLAKE3). One copy of every group always survives.</p>
+          <h1 class="hero-num" id="dupes-hero" data-i18n="dupes_title">Duplicates</h1>
+          <p class="hero-sub" id="dupes-sub" data-i18n="dupes_sub">Pick a folder. Files are grouped only after full-content verification (BLAKE3). One copy of every group always survives.</p>
         </div>
       </header>
 
       <div class="toolbar">
         <div class="path-field" id="dupes-path-field"><span class="path-placeholder" id="dupes-path">Choose a folder to scan</span></div>
-        <button class="btn ghost" id="btn-dupes-browse">Browse</button>
+        <button class="btn ghost" id="btn-dupes-browse" data-i18n="browse">Browse</button>
         <select class="select" id="dupes-minsize">
-          <option value="1048576" selected>Min 1 MiB</option>
-          <option value="10485760">Min 10 MiB</option>
-          <option value="104857600">Min 100 MiB</option>
-          <option value="65536">Min 64 KiB</option>
+          <option value="1048576" data-i18n="min_1m" selected>Min 1 MiB</option>
+          <option value="10485760" data-i18n="min_10m">Min 10 MiB</option>
+          <option value="104857600" data-i18n="min_100m">Min 100 MiB</option>
+          <option value="65536" data-i18n="min_64k">Min 64 KiB</option>
         </select>
-        <button class="btn primary" id="btn-dupes-scan" disabled>Scan</button>
+        <button class="btn primary" id="btn-dupes-scan" data-i18n="scan" disabled>Scan</button>
       </div>
 
       <div class="progress-line" id="dupes-progress" hidden><div class="bar indeterminate"></div><span class="progress-label" id="dupes-progress-label"></span></div>
@@ -106,7 +110,7 @@
 
       <div class="apply-bar" id="dupes-applybar" hidden>
         <div class="apply-info"><strong id="dupes-sel-size">0 B</strong><span id="dupes-sel-files">0 redundant copies selected</span></div>
-        <button class="btn primary" id="btn-dupes-clean">Recycle duplicates</button>
+        <button class="btn primary" id="btn-dupes-clean" data-i18n="recycle_dupes">Recycle duplicates</button>
       </div>
     </section>
 
@@ -114,15 +118,15 @@
     <section class="view" id="view-analyze" hidden>
       <header class="head">
         <div>
-          <h1 class="hero-num" id="an-hero">Space Analyze</h1>
-          <p class="hero-sub">Where did the space go? Read-only: this screen never deletes anything.</p>
+          <h1 class="hero-num" id="an-hero" data-i18n="an_title">Space Analyze</h1>
+          <p class="hero-sub" data-i18n="an_sub">Where did the space go? Read-only: this screen never deletes anything.</p>
         </div>
       </header>
 
       <div class="toolbar">
         <div class="path-field"><span class="path-placeholder" id="an-path">Choose a folder or drive</span></div>
-        <button class="btn ghost" id="btn-an-browse">Browse</button>
-        <button class="btn primary" id="btn-an-scan" disabled>Analyze</button>
+        <button class="btn ghost" id="btn-an-browse" data-i18n="browse">Browse</button>
+        <button class="btn primary" id="btn-an-scan" data-i18n="analyze" disabled>Analyze</button>
       </div>
 
       <div class="progress-line" id="an-progress" hidden><div class="bar indeterminate"></div><span class="progress-label" id="an-progress-label"></span></div>
@@ -130,10 +134,10 @@
       <div class="summary-strip" id="an-summary" hidden></div>
 
       <div class="panel-grid" id="an-panels" hidden>
-        <div class="panel"><h2>Largest files</h2><div class="rows" id="an-files"></div></div>
-        <div class="panel"><h2>Largest folders</h2><div class="rows" id="an-dirs"></div></div>
-        <div class="panel"><h2>By type</h2><div class="rows" id="an-exts"></div></div>
-        <div class="panel"><h2>By age (last modified)</h2><div class="rows" id="an-ages"></div></div>
+        <div class="panel"><h2 data-i18n="panel_files">Largest files</h2><div class="rows" id="an-files"></div></div>
+        <div class="panel"><h2 data-i18n="panel_dirs">Largest folders</h2><div class="rows" id="an-dirs"></div></div>
+        <div class="panel"><h2 data-i18n="panel_types">By type</h2><div class="rows" id="an-exts"></div></div>
+        <div class="panel"><h2 data-i18n="panel_ages">By age (last modified)</h2><div class="rows" id="an-ages"></div></div>
       </div>
     </section>
 
@@ -141,15 +145,15 @@
     <section class="view" id="view-dev" hidden>
       <header class="head">
         <div>
-          <h1 class="hero-num" id="dev-hero">Developer cleanup</h1>
-          <p class="hero-sub">Reclaim regenerable dependency and build folders (node_modules, target, venv, bin/obj) per project. Source code and Git history are never touched, and nothing is selected by default.</p>
+          <h1 class="hero-num" id="dev-hero" data-i18n="dev_title">Developer cleanup</h1>
+          <p class="hero-sub" data-i18n="dev_sub">Reclaim regenerable dependency and build folders (node_modules, target, venv, bin/obj) per project. Source code and Git history are never touched, and nothing is selected by default.</p>
         </div>
       </header>
 
       <div class="toolbar">
         <div class="path-field"><span class="path-placeholder" id="dev-path">Choose a folder that holds your projects</span></div>
-        <button class="btn ghost" id="btn-dev-browse">Browse</button>
-        <button class="btn primary" id="btn-dev-scan" disabled>Scan</button>
+        <button class="btn ghost" id="btn-dev-browse" data-i18n="browse">Browse</button>
+        <button class="btn primary" id="btn-dev-scan" data-i18n="scan" disabled>Scan</button>
       </div>
 
       <div class="progress-line" id="dev-progress" hidden><div class="bar indeterminate"></div><span class="progress-label" id="dev-progress-label"></span></div>
@@ -159,7 +163,7 @@
 
       <div class="apply-bar" id="dev-applybar" hidden>
         <div class="apply-info"><strong id="dev-sel-size">0 B</strong><span id="dev-sel-files">nothing selected</span></div>
-        <button class="btn primary" id="btn-dev-clean">Recycle selected</button>
+        <button class="btn primary" id="btn-dev-clean" data-i18n="recycle_selected">Recycle selected</button>
       </div>
     </section>
 
@@ -172,7 +176,7 @@
     <h3 id="modal-title">Confirm</h3>
     <p id="modal-body">-</p>
     <div class="modal-actions">
-      <button class="btn ghost" id="modal-cancel">Cancel</button>
+      <button class="btn ghost" id="modal-cancel" data-i18n="cancel">Cancel</button>
       <button class="btn primary" id="modal-ok">Move to Recycle Bin</button>
     </div>
   </div>
@@ -188,6 +192,7 @@
 
 <div class="toasts" id="toasts"></div>
 
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
