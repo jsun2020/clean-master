@@ -118,10 +118,8 @@ pub fn find_duplicates(records: &[FileRecord], opts: &DupeOptions) -> Vec<DupeGr
         }
         by_size.entry(r.size).or_default().push(r);
     }
-    let candidates: Vec<(u64, Vec<&FileRecord>)> = by_size
-        .into_iter()
-        .filter(|(_, v)| v.len() >= 2)
-        .collect();
+    let candidates: Vec<(u64, Vec<&FileRecord>)> =
+        by_size.into_iter().filter(|(_, v)| v.len() >= 2).collect();
 
     // Stage B: partial hash within each size bucket (parallel)
     let partial_groups: Vec<(u64, Vec<&FileRecord>)> = candidates
@@ -174,7 +172,11 @@ pub fn find_duplicates(records: &[FileRecord], opts: &DupeOptions) -> Vec<DupeGr
         })
         .collect();
 
-    groups.sort_by(|a, b| b.wasted_bytes().cmp(&a.wasted_bytes()).then_with(|| a.hash.cmp(&b.hash)));
+    groups.sort_by(|a, b| {
+        b.wasted_bytes()
+            .cmp(&a.wasted_bytes())
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
     groups
 }
 
@@ -210,7 +212,11 @@ mod tests {
         fs::create_dir_all(dir.path().join("b")).unwrap();
         fs::write(dir.path().join("a").join("x.bin"), &content).unwrap();
         fs::write(dir.path().join("b").join("copy.bin"), &content).unwrap();
-        fs::write(dir.path().join("b").join("different.bin"), vec![9u8; 10_000]).unwrap();
+        fs::write(
+            dir.path().join("b").join("different.bin"),
+            vec![9u8; 10_000],
+        )
+        .unwrap();
 
         let groups = find_duplicates(&scan(dir.path()), &opts(1, &[]));
         assert_eq!(groups.len(), 1);
@@ -254,10 +260,7 @@ mod tests {
         fs::write(docs.join("keep.bin"), &content).unwrap();
         fs::write(downloads.join("dupe.bin"), &content).unwrap();
 
-        let groups = find_duplicates(
-            &scan(dir.path()),
-            &opts(1, &[docs.to_str().unwrap()]),
-        );
+        let groups = find_duplicates(&scan(dir.path()), &opts(1, &[docs.to_str().unwrap()]));
         assert_eq!(groups.len(), 1);
         let keeper = &groups[0].members[groups[0].suggested_keep];
         assert!(keeper.path.contains("Documents"));

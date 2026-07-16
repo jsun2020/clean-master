@@ -84,7 +84,10 @@ pub fn print_report(args: &DupesArgs, groups: &[DupeGroup], dry: bool) -> Result
         println!();
     }
     if groups.len() > args.top {
-        println!("... and {} more groups (raise --top to see them).", groups.len() - args.top);
+        println!(
+            "... and {} more groups (raise --top to see them).",
+            groups.len() - args.top
+        );
         println!();
     }
     println!(

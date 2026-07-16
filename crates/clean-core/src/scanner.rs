@@ -211,7 +211,11 @@ mod tests {
         fs::write(root.join("a.txt"), b"hello").unwrap();
         fs::write(root.join("docs").join("report.pdf"), vec![0u8; 1024]).unwrap();
         fs::write(root.join("cache").join("tmp.log"), vec![1u8; 2048]).unwrap();
-        fs::write(root.join("cache").join("deep").join("blob.bin"), vec![2u8; 4096]).unwrap();
+        fs::write(
+            root.join("cache").join("deep").join("blob.bin"),
+            vec![2u8; 4096],
+        )
+        .unwrap();
         dir
     }
 
@@ -239,11 +243,7 @@ mod tests {
     fn captures_metadata() {
         let dir = fixture();
         let out = scan(dir.path(), &[]);
-        let pdf = out
-            .records
-            .iter()
-            .find(|r| r.name == "report.pdf")
-            .unwrap();
+        let pdf = out.records.iter().find(|r| r.name == "report.pdf").unwrap();
         assert_eq!(pdf.ext.as_deref(), Some("pdf"));
         assert_eq!(pdf.size, 1024);
         assert!(pdf.modified > 0);

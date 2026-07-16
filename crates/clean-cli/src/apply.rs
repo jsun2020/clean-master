@@ -49,11 +49,9 @@ pub fn apply(targets: Vec<(String, u64)>, yes: bool) -> Result<(), String> {
     let manifest_path = if manifest.actions.is_empty() {
         None
     } else {
-        Some(
-            manifest
-                .save(Path::new("."))
-                .map_err(|e| format!("files were recycled but the undo manifest could not be written: {e}"))?,
-        )
+        Some(manifest.save(Path::new(".")).map_err(|e| {
+            format!("files were recycled but the undo manifest could not be written: {e}")
+        })?)
     };
 
     println!(

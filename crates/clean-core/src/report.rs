@@ -80,11 +80,31 @@ pub fn by_extension(records: &[FileRecord], n: usize) -> Vec<ExtStat> {
 /// Files bucketed by age of last modification relative to `now_unix`.
 pub fn by_age(records: &[FileRecord], now_unix: i64) -> Vec<AgeBucket> {
     let mut buckets = [
-        AgeBucket { label: "< 30 days", count: 0, bytes: 0 },
-        AgeBucket { label: "30-90 days", count: 0, bytes: 0 },
-        AgeBucket { label: "90-365 days", count: 0, bytes: 0 },
-        AgeBucket { label: "1-2 years", count: 0, bytes: 0 },
-        AgeBucket { label: "> 2 years", count: 0, bytes: 0 },
+        AgeBucket {
+            label: "< 30 days",
+            count: 0,
+            bytes: 0,
+        },
+        AgeBucket {
+            label: "30-90 days",
+            count: 0,
+            bytes: 0,
+        },
+        AgeBucket {
+            label: "90-365 days",
+            count: 0,
+            bytes: 0,
+        },
+        AgeBucket {
+            label: "1-2 years",
+            count: 0,
+            bytes: 0,
+        },
+        AgeBucket {
+            label: "> 2 years",
+            count: 0,
+            bytes: 0,
+        },
     ];
     for r in records.iter().filter(|r| !r.is_dir) {
         let age_days = (now_unix - r.modified) / DAY;
@@ -110,7 +130,10 @@ mod tests {
         FileRecord {
             id,
             path: path.to_string(),
-            name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            name: p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             ext: if is_dir {
                 None
             } else {
