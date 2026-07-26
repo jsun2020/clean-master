@@ -23,7 +23,11 @@ fn main() {
             "  {:<40} {:>8.1} MiB  installed:{:<10} flags:{:?}",
             a.name.chars().take(40).collect::<String>(),
             a.size_bytes as f64 / (1u64 << 20) as f64,
-            if a.install_date.is_empty() { "-" } else { &a.install_date },
+            if a.install_date.is_empty() {
+                "-"
+            } else {
+                &a.install_date
+            },
             a.flags
         );
     }

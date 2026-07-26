@@ -159,7 +159,10 @@ pub fn newest_file_time_in(dir: &Path, ext: &str) -> Option<i64> {
             }
         }
         let Ok(meta) = entry.metadata() else { continue };
-        for t in [meta.accessed().ok(), meta.modified().ok()].into_iter().flatten() {
+        for t in [meta.accessed().ok(), meta.modified().ok()]
+            .into_iter()
+            .flatten()
+        {
             if let Ok(d) = t.duration_since(UNIX_EPOCH) {
                 let secs = d.as_secs() as i64;
                 if newest.map(|n| secs > n).unwrap_or(true) {
@@ -233,7 +236,9 @@ mod win {
                 if seen.is_multiple_of(64) {
                     progress(seen);
                 }
-                let Ok(k) = root.open_subkey(&sub) else { continue };
+                let Ok(k) = root.open_subkey(&sub) else {
+                    continue;
+                };
                 let name: String = k.get_value("DisplayName").unwrap_or_default();
                 let name = name.trim().to_string();
                 if name.is_empty() || is_update_entry(&name) {
@@ -385,8 +390,14 @@ mod tests {
 
     #[test]
     fn install_date_parses_registry_format_only() {
-        assert_eq!(parse_install_date("20230112").as_deref(), Some("2023-01-12"));
-        assert_eq!(parse_install_date(" 20230112 ").as_deref(), Some("2023-01-12"));
+        assert_eq!(
+            parse_install_date("20230112").as_deref(),
+            Some("2023-01-12")
+        );
+        assert_eq!(
+            parse_install_date(" 20230112 ").as_deref(),
+            Some("2023-01-12")
+        );
         assert_eq!(parse_install_date("2023-01-12"), None);
         assert_eq!(parse_install_date("202301"), None);
         assert_eq!(parse_install_date(""), None);
@@ -428,7 +439,10 @@ mod tests {
         assert!(is_bundleware("2345 Pinyin Input", ""));
         assert!(is_bundleware("McAfee WebAdvisor", "McAfee LLC"));
         assert!(is_bundleware("Some Game Bar", "WildTangent"));
-        assert!(!is_bundleware("Visual Studio Code", "Microsoft Corporation"));
+        assert!(!is_bundleware(
+            "Visual Studio Code",
+            "Microsoft Corporation"
+        ));
         assert!(!is_bundleware("WPS Office", "Kingsoft"));
     }
 
