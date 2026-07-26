@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use clean_core::appscan::{scan_installed_apps, AppRemoval, InstalledApp};
 use clean_core::devscan::scan_projects;
 use clean_core::dupes::{find_duplicates, DupeGroup, DupeOptions};
 use clean_core::report;
@@ -30,6 +31,9 @@ struct AppState {
     /// Deletable developer artifacts from the last dev scan, flat and indexed;
     /// the UI selects by index and the path is re-derived here (never injected).
     dev: Mutex<Vec<(String, u64)>>,
+    /// Installed apps from the last app scan; the UI selects by index and the
+    /// uninstall command / bundle path is re-derived here (never injected).
+    apps: Mutex<Vec<InstalledApp>>,
 }
 
 struct JunkRuleState {
@@ -704,6 +708,144 @@ async fn dev_apply(
     })
 }
 
+// ----------------------------------------------------------- app manager --
+
+#[derive(Serialize)]
+struct AppDto {
+    index: usize,
+    name: String,
+    version: String,
+    publisher: String,
+    install_date: String,
+    bytes: u64,
+    location: String,
+    last_used_unix: i64,
+    flags: Vec<String>,
+    /// "uninstaller" (Windows: vendor uninstaller is launched) or
+    /// "trash" (macOS: bundle is recycled, undo-able).
+    removal: String,
+}
+
+#[derive(Serialize)]
+struct AppsDto {
+    app_count: usize,
+    /// Sum over apps with a KNOWN size; unknown sizes count 0.
+    total_bytes: u64,
+    flagged_count: usize,
+    apps: Vec<AppDto>,
+}
+
+#[derive(Serialize)]
+struct AppRemoveDto {
+    /// Windows: the vendor uninstaller was launched (finish it there, rescan).
+    launched: bool,
+    /// macOS: the bundle was moved to the Trash.
+    recycled: usize,
+    bytes: u64,
+    failed: usize,
+    manifest: Option<String>,
+}
+
+#[tauri::command]
+async fn apps_scan(app: AppHandle, state: State<'_, AppState>) -> Result<AppsDto, String> {
+    let app2 = app.clone();
+    let apps = tauri::async_runtime::spawn_blocking(move || {
+        scan_installed_apps(now_unix(), &|seen| {
+            emit_progress(&app2, "apps-scan", "reading installed software", seen);
+        })
+    })
+    .await
+    .map_err(|e| format!("app scan task failed: {e}"))?;
+
+    let dto = AppsDto {
+        app_count: apps.len(),
+        total_bytes: apps.iter().map(|a| a.size_bytes).sum(),
+        flagged_count: apps.iter().filter(|a| !a.flags.is_empty()).count(),
+        apps: apps
+            .iter()
+            .enumerate()
+            .map(|(i, a)| AppDto {
+                index: i,
+                name: a.name.clone(),
+                version: a.version.clone(),
+                publisher: a.publisher.clone(),
+                install_date: a.install_date.clone(),
+                bytes: a.size_bytes,
+                location: a.location.clone(),
+                last_used_unix: a.last_used_unix,
+                flags: a.flags.clone(),
+                removal: match a.removal {
+                    AppRemoval::WindowsUninstall { .. } => "uninstaller".to_string(),
+                    AppRemoval::MacBundle { .. } => "trash".to_string(),
+                },
+            })
+            .collect(),
+    };
+    *state.apps.lock().map_err(|_| "state lock poisoned")? = apps;
+    Ok(dto)
+}
+
+#[tauri::command]
+async fn app_uninstall(state: State<'_, AppState>, index: usize) -> Result<AppRemoveDto, String> {
+    // Re-derive the removal action from server-side state; the webview only
+    // ever supplies an index.
+    let (removal, size) = {
+        let apps = state.apps.lock().map_err(|_| "state lock poisoned")?;
+        let Some(a) = apps.get(index) else {
+            return Err("No such app. Rescan first.".into());
+        };
+        (a.removal.clone(), a.size_bytes)
+    };
+    match removal {
+        AppRemoval::WindowsUninstall { uninstall_string } => {
+            // Launch the vendor's own uninstaller, exactly like Settings >
+            // Apps. Clean Master never deletes program files itself.
+            std::process::Command::new("cmd")
+                .args(["/C", &uninstall_string])
+                .spawn()
+                .map_err(|e| format!("could not launch the uninstaller: {e}"))?;
+            Ok(AppRemoveDto {
+                launched: true,
+                recycled: 0,
+                bytes: 0,
+                failed: 0,
+                manifest: None,
+            })
+        }
+        AppRemoval::MacBundle { path } => {
+            tauri::async_runtime::spawn_blocking(move || {
+                let bundle = PathBuf::from(&path);
+                // /Applications is a protected root; authorize exactly the
+                // directory that holds this bundle (same mechanism junk rules
+                // use to authorize their own base).
+                let base = bundle.parent().map(Path::to_path_buf).unwrap_or_default();
+                if !deletion_allowed(&bundle, &[base]) {
+                    return Err("Refusing to remove: outside the applications folder.".to_string());
+                }
+                let mut manifest = ActionManifest::new();
+                let outcome = recycle_files(&[(path, size)], &mut manifest, |_| {});
+                let manifest_path = if manifest.actions.is_empty() {
+                    None
+                } else {
+                    manifest
+                        .save(&manifest_dir())
+                        .ok()
+                        .map(|p| p.display().to_string())
+                };
+                Ok(AppRemoveDto {
+                    launched: false,
+                    recycled: outcome.deleted,
+                    bytes: outcome.bytes,
+                    failed: outcome.failed.len(),
+                    manifest: manifest_path,
+                })
+            })
+            .await
+            .map_err(|e| format!("remove task failed: {e}"))?
+        }
+    }
+}
+
 #[tauri::command]
 async fn undo_status() -> Result<Option<UndoStatusDto>, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -764,6 +906,8 @@ fn main() {
             dupes_apply,
             dev_scan,
             dev_apply,
+            apps_scan,
+            app_uninstall,
             analyze_path,
             undo_status,
             undo_last,

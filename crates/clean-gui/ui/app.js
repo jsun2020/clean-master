@@ -57,6 +57,7 @@ function setLang(next) {
   if (dupesReport) renderDupes();
   if (lastAnalyze) renderAnalyze(lastAnalyze);
   if (devReport) renderDev();
+  if (appsReport) renderApps();
   refreshUndo();
 }
 
@@ -91,7 +92,9 @@ function timeAgo(unix) {
   if (s < 60) return t("just_now");
   if (s < 3600) return tf("min_ago", { n: Math.floor(s / 60) });
   if (s < 86400) return tf("h_ago", { n: Math.floor(s / 3600) });
-  return tf("d_ago", { n: Math.floor(s / 86400) });
+  if (s < 86400 * 30) return tf("d_ago", { n: Math.floor(s / 86400) });
+  if (s < 86400 * 365) return tf("mo_ago", { n: Math.floor(s / (86400 * 30)) });
+  return tf("y_ago", { n: Math.floor(s / (86400 * 365)) });
 }
 
 function toast(msg, isErr) {
@@ -151,12 +154,35 @@ function busyShow(title) {
 function busyHide() { $("busy").hidden = true; }
 
 // ------------------------------------------------------------ nav ------
+/* "Disk Files" is one nav entry holding two sub-tabs (Junk Clean and
+   Duplicates); the underlying sections keep their ids and state. */
+
+let filesTab = "junk";
+
+function showView(v) {
+  $("files-tabs").hidden = v !== "files";
+  ["junk", "dupes", "analyze", "dev", "apps"].forEach((s) => {
+    $("view-" + s).hidden = v === "files" ? s !== filesTab : s !== v;
+  });
+  // The app list is cheap to build (registry / bundle listing): scan lazily
+  // the first time the screen is opened.
+  if (v === "apps" && !appsReport && !appsScanning) appsScan();
+}
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    ["junk", "dupes", "analyze", "dev"].forEach((v) => { $("view-" + v).hidden = v !== btn.dataset.view; });
+    showView(btn.dataset.view);
+  });
+});
+
+document.querySelectorAll("#files-tabs .subtab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#files-tabs .subtab").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    filesTab = btn.dataset.tab;
+    showView("files");
   });
 });
 
@@ -169,6 +195,7 @@ listen("progress", (e) => {
   else if (stage === "dupe-hash") $("dupes-progress-label").textContent = t("prog_hashing");
   else if (stage === "analyze-scan") $("an-progress-label").textContent = tf("prog_scanning", { n: fmtCount(seen) });
   else if (stage === "dev-scan") $("dev-progress-label").textContent = tf("prog_dev", { n: fmtCount(seen) });
+  else if (stage === "apps-scan") $("apps-progress-label").textContent = tf("prog_apps", { n: fmtCount(seen) });
 });
 
 listen("apply-progress", (e) => {
@@ -679,6 +706,128 @@ $("btn-dev-clean").addEventListener("click", async () => {
     toast(String(err), true);
   } finally { busyHide(); }
 });
+
+// --------------------------------------------------------------- apps --
+
+const APP_FLAG_KEYS = { unused: "flag_unused", old: "flag_old", bundleware: "flag_bundleware" };
+
+let appsReport = null;
+let appsScanning = false;
+let appsFilter = "all";
+
+async function appsScan() {
+  appsScanning = true;
+  $("apps-progress").hidden = false;
+  $("apps-progress").classList.add("on");
+  $("apps-list").innerHTML = "";
+  $("apps-summary").hidden = true;
+  $("apps-chips").hidden = true;
+  $("btn-apps-rescan").disabled = true;
+  try {
+    appsReport = await invoke("apps_scan");
+    renderApps();
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    appsScanning = false;
+    $("apps-progress").classList.remove("on");
+    $("apps-progress").hidden = true;
+    $("btn-apps-rescan").disabled = false;
+  }
+}
+
+function appMatchesFilter(a) {
+  if (appsFilter === "all") return true;
+  if (appsFilter === "flagged") return a.flags.length > 0;
+  return a.flags.includes(appsFilter);
+}
+
+function renderApps() {
+  const rep = appsReport;
+  $("apps-hero").innerHTML = tf("apps_hero", {
+    n: fmtCount(rep.app_count),
+    b: "<strong>" + esc(fmtBytes(rep.total_bytes)) + "</strong>",
+  });
+  $("apps-summary").hidden = false;
+  $("apps-summary").innerHTML =
+    '<div class="sum-item"><div class="k">' + t("sum_apps") + '</div><div class="v">' + fmtCount(rep.app_count) + '</div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_total") + '</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
+    '<div class="sum-item"><div class="k">' + t("sum_flagged") + '</div><div class="v">' + fmtCount(rep.flagged_count) + '</div></div>';
+  $("apps-chips").hidden = false;
+  document.querySelectorAll("#apps-chips .chip").forEach((c) =>
+    c.classList.toggle("active", c.dataset.filter === appsFilter));
+
+  if (!rep.apps.length) {
+    $("apps-list").innerHTML = '<div class="hint">' + t("apps_none") + '</div>';
+    return;
+  }
+  const shown = rep.apps.filter(appMatchesFilter);
+  if (!shown.length) {
+    $("apps-list").innerHTML = '<div class="hint">' + t("apps_filter_empty") + '</div>';
+    return;
+  }
+
+  let html = '<div class="card">';
+  for (const a of shown) {
+    const meta = [];
+    if (a.version) meta.push(esc(a.version));
+    if (a.publisher) meta.push(esc(a.publisher));
+    if (a.install_date) meta.push(esc(tf("installed_on", { d: a.install_date })));
+    meta.push(a.last_used_unix
+      ? esc(tf("last_used_est", { ago: timeAgo(a.last_used_unix) }))
+      : t("usage_unknown"));
+    const tags = a.flags.map((f) =>
+      '<span class="tag-flag' + (f === "bundleware" ? " warn" : "") + '">' +
+      t(APP_FLAG_KEYS[f] || f) + '</span>').join("");
+    html += '<div class="app-row" title="' + esc(a.location || a.name) + '">' +
+      '<div class="rule-detail"><div class="rule-name">' + esc(a.name) + tags + '</div>' +
+      '<div class="rule-base">' + meta.join(" &middot; ") + '</div></div>' +
+      '<div class="rule-bytes">' + (a.bytes ? esc(fmtBytes(a.bytes)) : "-") + '</div>' +
+      '<button class="btn ghost small" data-uninstall="' + a.index + '">' + t("uninstall") + '</button></div>';
+  }
+  html += "</div>";
+  $("apps-list").innerHTML = html;
+
+  document.querySelectorAll("#apps-list [data-uninstall]").forEach((btn) => {
+    btn.addEventListener("click", () => uninstallApp(Number(btn.dataset.uninstall)));
+  });
+}
+
+document.querySelectorAll("#apps-chips .chip").forEach((c) => {
+  c.addEventListener("click", () => {
+    appsFilter = c.dataset.filter;
+    if (appsReport) renderApps();
+  });
+});
+
+$("btn-apps-rescan").addEventListener("click", appsScan);
+
+async function uninstallApp(index) {
+  const a = appsReport.apps.find((x) => x.index === index);
+  if (!a) return;
+  const isTrash = a.removal === "trash";
+  const ok = await confirmModal(
+    tf("confirm_uninstall_title", { name: a.name }),
+    isTrash ? tf("confirm_trash_body", { name: a.name }) : t("confirm_uninstall_body"),
+    isTrash ? t("move_to_bin") : t("launch_uninstaller"));
+  if (!ok) return;
+  try {
+    const res = await invoke("app_uninstall", { index });
+    if (res.launched) {
+      // Windows: the vendor uninstaller now owns the flow; the list refreshes
+      // when the user hits Rescan after finishing it.
+      toast(tf("toast_uninstaller", { name: a.name }));
+    } else if (res.recycled > 0) {
+      toast(tf("toast_app_trashed", { name: a.name, bytes: fmtBytes(res.bytes) }));
+      refreshUndo();
+      appsScan();
+    } else {
+      toast(tf("toast_app_trash_failed", { name: a.name }), true);
+    }
+  } catch (err) {
+    toast(String(err), true);
+  }
+}
 
 // --------------------------------------------------------------- undo --
 

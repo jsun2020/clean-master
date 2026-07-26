@@ -23,13 +23,9 @@
     </div>
 
     <nav class="nav">
-      <button class="nav-item active" data-view="junk">
-        <svg viewBox="0 0 20 20"><path d="M4 6h12M8 6V4h4v2M6 6l1 10h6l1-10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span data-i18n="nav_junk">Junk Clean</span>
-      </button>
-      <button class="nav-item" data-view="dupes">
-        <svg viewBox="0 0 20 20"><rect x="3" y="3" width="10" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 17h7a2 2 0 0 0 2-2V7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-        <span data-i18n="nav_dupes">Duplicates</span>
+      <button class="nav-item active" data-view="files">
+        <svg viewBox="0 0 20 20"><path d="M3 6a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+        <span data-i18n="nav_files">Disk Files</span>
       </button>
       <button class="nav-item" data-view="analyze">
         <svg viewBox="0 0 20 20"><path d="M3 17V9M8 17V4M13 17v-6M18 17V7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -38,6 +34,10 @@
       <button class="nav-item" data-view="dev">
         <svg viewBox="0 0 20 20"><path d="M7 6l-4 4 4 4M13 6l4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span data-i18n="nav_dev">Developer</span>
+      </button>
+      <button class="nav-item" data-view="apps">
+        <svg viewBox="0 0 20 20"><rect x="3" y="3" width="6" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="11" y="3" width="6" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="11" width="6" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M14 11.5v5M11.5 14h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span data-i18n="nav_apps">App Manager</span>
       </button>
     </nav>
 
@@ -57,6 +57,12 @@
 
   <!-- ============================== content ============================ -->
   <main class="main">
+
+    <!-- Disk File Management sub-tabs (Junk Clean | Duplicates) --------- -->
+    <div class="subtabs" id="files-tabs">
+      <button class="subtab active" data-tab="junk" data-i18n="tab_junk">Junk Clean</button>
+      <button class="subtab" data-tab="dupes" data-i18n="tab_dupes">Duplicates</button>
+    </div>
 
     <!-- JUNK ----------------------------------------------------------- -->
     <section class="view" id="view-junk">
@@ -165,6 +171,32 @@
         <div class="apply-info"><strong id="dev-sel-size">0 B</strong><span id="dev-sel-files">nothing selected</span></div>
         <button class="btn primary" id="btn-dev-clean" data-i18n="recycle_selected">Recycle selected</button>
       </div>
+    </section>
+
+    <!-- APP MANAGER ---------------------------------------------------- -->
+    <section class="view" id="view-apps" hidden>
+      <header class="head">
+        <div>
+          <h1 class="hero-num" id="apps-hero" data-i18n="apps_title">App Manager</h1>
+          <p class="hero-sub" id="apps-sub" data-i18n="apps_sub">Installed software with size, install date and a usage estimate. Removal always runs the app's own uninstaller (Windows) or moves the app to the Trash (macOS) - nothing is deleted behind your back.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="btn-apps-rescan" data-i18n="rescan">Rescan</button>
+        </div>
+      </header>
+
+      <div class="progress-line" id="apps-progress" hidden><div class="bar indeterminate"></div><span class="progress-label" id="apps-progress-label"></span></div>
+
+      <div class="summary-strip" id="apps-summary" hidden></div>
+
+      <div class="chips" id="apps-chips" hidden>
+        <button class="chip active" data-filter="all" data-i18n="chip_all">All</button>
+        <button class="chip" data-filter="flagged" data-i18n="chip_flagged">Suggestions</button>
+        <button class="chip" data-filter="unused" data-i18n="chip_unused">Long unused</button>
+        <button class="chip" data-filter="bundleware" data-i18n="chip_bundle">Bundled</button>
+      </div>
+
+      <div class="cards" id="apps-list"></div>
     </section>
 
   </main>
