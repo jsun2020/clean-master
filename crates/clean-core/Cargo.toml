@@ -14,5 +14,8 @@ blake3.workspace = true
 rayon = "1"
 trash = "5"
 
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
 [dev-dependencies]
 tempfile.workspace = true

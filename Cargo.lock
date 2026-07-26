@@ -659,11 +659,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "trash",
+ "winreg",
 ]
 
 [[package]]
 name = "clean-gui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "clean-core",
  "rfd",

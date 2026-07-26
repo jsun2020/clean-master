@@ -16,18 +16,25 @@ See `prd.md` for the full product definition.
 cargo build --release -p clean-gui   # target/release/clean-master.exe
 ```
 
-Three screens, same safety contract as the CLI:
+Four screens, same safety contract as the CLI:
 
-- **Junk Clean** - scans the built-in rule pack on launch (dry run), shows
-  every rule with its location, size and rationale; clean what you select.
-- **Duplicates** - pick a folder, full BLAKE3 verification, the KEEP copy is
-  marked and can never be deleted; opt groups in or out.
+- **Disk Files** - one screen with two tabs:
+  - *Junk Clean* - scans the built-in rule pack on launch (dry run), shows
+    every rule with its location, size and rationale; clean what you select.
+  - *Duplicates* - pick a folder, full BLAKE3 verification, the KEEP copy is
+    marked and can never be deleted; opt groups in or out.
 - **Space Analyze** - largest files/folders, by type, by age. Read-only.
 - **Developer** - pick a folder; finds regenerable dependency/build folders
   (node_modules, Rust/Maven `target`, Gradle output, Python venvs, .NET
   bin/obj) grouped by project. Off by default (opt-in per project); an
   artifact is only listed when a project manifest proves it is regenerable,
   so source code and `.git` are never touched.
+- **App Manager** - installed software with size, install date and a
+  best-effort "last used" estimate; flags removal candidates (long unused,
+  old installs, known bundleware). Removal always goes through the app's own
+  uninstaller on Windows (exactly like Settings > Apps - Clean Master never
+  deletes inside Program Files), or moves the .app bundle to the Trash on
+  macOS (undo-able).
 - **Undo** - every clean writes a manifest to `%LOCALAPPDATA%\CleanMaster`;
   the sidebar restores the last clean from the Recycle Bin in one click.
 

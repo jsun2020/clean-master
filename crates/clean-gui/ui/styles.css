@@ -366,3 +366,34 @@ body {
 }
 .banner b { color: #4c3a12; }
 button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(--emerald-hi); outline-offset: 2px; }
+
+/* --------------------------------------------- disk files sub-tabs ------ */
+.subtabs { display: flex; gap: 8px; max-width: 880px; margin: 0 auto 18px; }
+.subtab {
+  font: inherit; font-size: 13px; font-weight: 650; color: var(--ink-2);
+  background: transparent; border: 1px solid transparent; border-radius: 20px;
+  padding: 7px 16px; cursor: pointer;
+}
+.subtab:hover { color: var(--ink); background: var(--card); border-color: var(--line); }
+.subtab.active { color: #fff; background: var(--emerald); border-color: var(--emerald); }
+
+/* --------------------------------------------------- app manager -------- */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.chip {
+  font: inherit; font-size: 12px; font-weight: 600; color: var(--ink-2);
+  background: var(--card); border: 1px solid var(--line); border-radius: 20px;
+  padding: 6px 13px; cursor: pointer;
+}
+.chip:hover { border-color: #cfccc2; color: var(--ink); }
+.chip.active { color: #fff; background: var(--emerald); border-color: var(--emerald); }
+
+.app-row { display: flex; align-items: center; gap: 12px; padding: 11px 18px; }
+.app-row + .app-row { border-top: 1px dashed #efede7; }
+.app-row .btn.small { width: auto; flex: none; }
+.tag-flag {
+  font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--ink-2); border: 1.4px solid var(--line); background: var(--paper);
+  border-radius: 20px; padding: 1px 7px; margin-left: 6px; white-space: nowrap;
+  vertical-align: 2px;
+}
+.tag-flag.warn { color: var(--amber); border-color: #e6c583; background: #fdf6e8; }
