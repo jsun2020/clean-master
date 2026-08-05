@@ -11,7 +11,9 @@ use clean_core::devscan::scan_projects;
 use clean_core::dupes::{find_duplicates, DupeGroup, DupeOptions};
 use clean_core::report;
 use clean_core::rules::{builtin_rules, evaluate_all_with_progress};
-use clean_core::safety::{deletion_allowed, recycle_files, ActionManifest};
+use clean_core::safety::{
+    delete_files_permanently, deletion_allowed, recycle_files, ActionManifest, Disposition,
+};
 use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -257,7 +259,9 @@ async fn junk_apply(
     app: AppHandle,
     state: State<'_, AppState>,
     rule_ids: Vec<String>,
+    permanent: Option<bool>,
 ) -> Result<ApplyDto, String> {
+    let permanent = permanent.unwrap_or(false);
     let (targets, bases, path_to_rule) = {
         let junk = state.junk.lock().map_err(|_| "state lock poisoned")?;
         if junk.is_empty() {
@@ -291,12 +295,19 @@ async fn junk_apply(
             .collect();
         let total = filtered.len();
         let mut manifest = ActionManifest::new();
-        let outcome = recycle_files(&filtered, &mut manifest, |done| {
+        let report = |done: usize| {
             let _ = app2.emit(
                 "apply-progress",
                 serde_json::json!({ "done": done, "total": total }),
             );
-        });
+        };
+        // Opt-in fast path: the user explicitly ticked "delete permanently"
+        // in the confirm dialog. Default stays Recycle Bin + undo.
+        let outcome = if permanent {
+            delete_files_permanently(&filtered, &mut manifest, report)
+        } else {
+            recycle_files(&filtered, &mut manifest, report)
+        };
         let manifest_path = if manifest.actions.is_empty() {
             None
         } else {
@@ -849,15 +860,21 @@ async fn app_uninstall(state: State<'_, AppState>, index: usize) -> Result<AppRe
 #[tauri::command]
 async fn undo_status() -> Result<Option<UndoStatusDto>, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let Some(path) = ActionManifest::latest_in(&manifest_dir()) else {
+        // Permanent-delete manifests are audit records with nothing to give
+        // back; the undo panel only ever shows recycle sessions.
+        let Some((path, m)) = ActionManifest::latest_restorable_in(&manifest_dir()) else {
             return Ok(None);
         };
-        let m = ActionManifest::load(&path).map_err(|e| e.to_string())?;
+        let restorable: Vec<_> = m
+            .actions
+            .iter()
+            .filter(|a| a.disposition == Disposition::RecycleBin)
+            .collect();
         Ok(Some(UndoStatusDto {
             manifest: path.display().to_string(),
-            files: m.actions.len(),
-            bytes: m.actions.iter().map(|a| a.size).sum(),
-            at_unix: m.actions.first().map(|a| a.at_unix).unwrap_or(0),
+            files: restorable.len(),
+            bytes: restorable.iter().map(|a| a.size).sum(),
+            at_unix: restorable.first().map(|a| a.at_unix).unwrap_or(0),
         }))
     })
     .await
@@ -867,10 +884,9 @@ async fn undo_status() -> Result<Option<UndoStatusDto>, String> {
 #[tauri::command]
 async fn undo_last() -> Result<UndoResultDto, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        let Some(path) = ActionManifest::latest_in(&manifest_dir()) else {
+        let Some((path, m)) = ActionManifest::latest_restorable_in(&manifest_dir()) else {
             return Err("Nothing to undo.".to_string());
         };
-        let m = ActionManifest::load(&path).map_err(|e| e.to_string())?;
         let out = clean_core::safety::undo(&m).map_err(|e| e.to_string())?;
         // Retire the manifest so "undo last" moves on to the previous apply.
         let done = path.with_file_name(format!("undone-{}.json", m.session_id));

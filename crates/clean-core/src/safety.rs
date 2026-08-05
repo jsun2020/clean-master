@@ -114,10 +114,11 @@ impl ActionManifest {
             .map_err(|e| CoreError::Session(format!("parse manifest {}: {e}", path.display())))
     }
 
-    /// Most recent clean-undo-*.json in `dir`.
-    pub fn latest_in(dir: &Path) -> Option<PathBuf> {
+    fn manifests_in(dir: &Path) -> Vec<PathBuf> {
         let mut candidates: Vec<PathBuf> = std::fs::read_dir(dir)
-            .ok()?
+            .ok()
+            .into_iter()
+            .flatten()
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| {
@@ -128,7 +129,31 @@ impl ActionManifest {
             })
             .collect();
         candidates.sort();
-        candidates.pop()
+        candidates
+    }
+
+    /// Most recent clean-undo-*.json in `dir`.
+    pub fn latest_in(dir: &Path) -> Option<PathBuf> {
+        Self::manifests_in(dir).pop()
+    }
+
+    /// Most recent manifest that still has something the Recycle Bin can
+    /// give back. Permanent-delete manifests are kept as an audit record
+    /// but must never be offered for undo (there is nothing to restore),
+    /// nor hide an older restorable session behind them.
+    pub fn latest_restorable_in(dir: &Path) -> Option<(PathBuf, ActionManifest)> {
+        let mut candidates = Self::manifests_in(dir);
+        while let Some(path) = candidates.pop() {
+            if let Ok(m) = ActionManifest::load(&path) {
+                if m.actions
+                    .iter()
+                    .any(|a| a.disposition == Disposition::RecycleBin)
+                {
+                    return Some((path, m));
+                }
+            }
+        }
+        None
     }
 }
 
@@ -137,6 +162,12 @@ pub struct ApplyOutcome {
     pub bytes: u64,
     pub failed: Vec<(String, String)>, // (path, reason)
 }
+
+/// Files per shell transaction. Each `trash::delete` call is a full COM
+/// IFileOperation (~50-200 ms under corporate EDR), so recycling one file
+/// at a time turns a 27k-file clean into tens of minutes. Batching like
+/// Explorer does (select-all + Delete) amortizes that setup cost.
+const RECYCLE_CHUNK: usize = 500;
 
 /// Move files to the Recycle Bin, recording each success in the manifest.
 /// Locked or vanished files are reported, never fatal.
@@ -154,26 +185,105 @@ pub fn recycle_files(
         bytes: 0,
         failed: Vec::new(),
     };
-    for (i, (path, size)) in paths.iter().enumerate() {
+    let mut processed = 0usize;
+    for chunk in paths.chunks(RECYCLE_CHUNK) {
         // Absolutize so the manifest matches the Recycle Bin's original-path
-        // records regardless of the working directory at apply time.
-        let abs = std::path::absolute(path)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| path.clone());
-        match trash::delete(&abs) {
-            Ok(()) => {
+        // records regardless of the working directory at apply time, and drop
+        // already-missing files up front: the batch must only see files that
+        // exist, so that "vanished after a failed batch" below can only mean
+        // "the partial batch did recycle it".
+        let mut batch: Vec<(&str, String, u64)> = Vec::new();
+        for (path, size) in chunk {
+            let abs = std::path::absolute(path)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| path.clone());
+            if std::fs::symlink_metadata(&abs).is_ok() {
+                batch.push((path, abs, *size));
+            } else {
+                outcome
+                    .failed
+                    .push((path.clone(), "file no longer exists".into()));
+            }
+        }
+        // One shell transaction for the whole chunk. A chunk containing a
+        // locked file reports failure as a whole (IFileOperation flags any
+        // aborted item) while still recycling the unlocked items.
+        let batch_ok =
+            batch.is_empty() || trash::delete_all(batch.iter().map(|(_, abs, _)| abs)).is_ok();
+        for (path, abs, size) in batch {
+            let gone = std::fs::symlink_metadata(&abs).is_err();
+            if batch_ok || gone {
                 outcome.deleted += 1;
                 outcome.bytes += size;
                 manifest.actions.push(Action {
                     from: abs,
                     disposition: Disposition::RecycleBin,
+                    size,
+                    at_unix: now,
+                });
+            } else {
+                // Still on disk after a failed batch: retry alone to get the
+                // per-file reason (usually held open by a running app). Only
+                // the genuinely blocked files pay the per-call cost.
+                match trash::delete(&abs) {
+                    Ok(()) => {
+                        outcome.deleted += 1;
+                        outcome.bytes += size;
+                        manifest.actions.push(Action {
+                            from: abs,
+                            disposition: Disposition::RecycleBin,
+                            size,
+                            at_unix: now,
+                        });
+                    }
+                    Err(e) => outcome.failed.push((path.to_string(), e.to_string())),
+                }
+            }
+        }
+        processed += chunk.len();
+        progress(processed);
+    }
+    progress(paths.len());
+    outcome
+}
+
+/// Permanently delete files - no Recycle Bin, no undo. Opt-in fast path for
+/// very large junk sets; every deletion is still recorded in the manifest
+/// (as `Disposition::Permanent`) so the apply leaves an audit trail, but
+/// undo intentionally skips these entries. Directories are refused (this is
+/// for junk FILES; directory removal stays on the recycle path).
+pub fn delete_files_permanently(
+    paths: &[(String, u64)],
+    manifest: &mut ActionManifest,
+    mut progress: impl FnMut(usize),
+) -> ApplyOutcome {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut outcome = ApplyOutcome {
+        deleted: 0,
+        bytes: 0,
+        failed: Vec::new(),
+    };
+    for (i, (path, size)) in paths.iter().enumerate() {
+        let abs = std::path::absolute(path)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| path.clone());
+        match std::fs::remove_file(&abs) {
+            Ok(()) => {
+                outcome.deleted += 1;
+                outcome.bytes += size;
+                manifest.actions.push(Action {
+                    from: abs,
+                    disposition: Disposition::Permanent,
                     size: *size,
                     at_unix: now,
                 });
             }
             Err(e) => outcome.failed.push((path.clone(), e.to_string())),
         }
-        if i % 50 == 0 {
+        if i % 200 == 0 {
             progress(i);
         }
     }
@@ -489,5 +599,91 @@ mod tests {
         assert_eq!(out.deleted, 0);
         assert_eq!(out.failed.len(), 1);
         assert!(m.actions.is_empty());
+    }
+
+    #[test]
+    fn recycle_chunks_report_all_missing_and_final_progress() {
+        // More paths than one chunk, all missing: exercises the chunk loop
+        // without touching the real Recycle Bin.
+        let paths: Vec<(String, u64)> = (0..(super::RECYCLE_CHUNK + 3))
+            .map(|i| (format!("C:\\definitely\\missing\\f{i}.tmp"), 1))
+            .collect();
+        let mut m = ActionManifest::new();
+        let mut last = 0usize;
+        let out = recycle_files(&paths, &mut m, |done| last = done);
+        assert_eq!(out.deleted, 0);
+        assert_eq!(out.failed.len(), paths.len());
+        assert_eq!(last, paths.len());
+        assert!(m.actions.is_empty());
+    }
+
+    #[test]
+    fn permanent_delete_removes_and_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for i in 0..3 {
+            let p = dir.path().join(format!("junk-{i}.tmp"));
+            std::fs::write(&p, b"x").unwrap();
+            paths.push((p.display().to_string(), 1));
+        }
+        paths.push(("C:\\definitely\\missing\\gone.tmp".into(), 1));
+        let mut m = ActionManifest::new();
+        let out = delete_files_permanently(&paths, &mut m, |_| {});
+        assert_eq!(out.deleted, 3);
+        assert_eq!(out.bytes, 3);
+        assert_eq!(out.failed.len(), 1);
+        assert_eq!(m.actions.len(), 3);
+        assert!(m
+            .actions
+            .iter()
+            .all(|a| a.disposition == Disposition::Permanent));
+        for (p, _) in &paths[..3] {
+            assert!(!Path::new(p).exists());
+        }
+    }
+
+    #[test]
+    fn permanent_delete_refuses_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let sub = dir.path().join("subdir");
+        std::fs::create_dir(&sub).unwrap();
+        let mut m = ActionManifest::new();
+        let out = delete_files_permanently(&[(sub.display().to_string(), 0)], &mut m, |_| {});
+        assert_eq!(out.deleted, 0);
+        assert_eq!(out.failed.len(), 1);
+        assert!(sub.exists());
+    }
+
+    #[test]
+    fn latest_restorable_skips_permanent_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut older = ActionManifest::new();
+        older.session_id = "100".into();
+        older.actions.push(Action {
+            from: "C:\\x\\recycled.tmp".into(),
+            disposition: Disposition::RecycleBin,
+            size: 5,
+            at_unix: 1,
+        });
+        older.save(dir.path()).unwrap();
+        let mut newer = ActionManifest::new();
+        newer.session_id = "200".into();
+        newer.actions.push(Action {
+            from: "C:\\x\\deleted.tmp".into(),
+            disposition: Disposition::Permanent,
+            size: 7,
+            at_unix: 2,
+        });
+        let newer_path = newer.save(dir.path()).unwrap();
+        // latest_in sees the permanent manifest, but the restorable lookup
+        // must fall through to the older recycle session behind it.
+        assert_eq!(ActionManifest::latest_in(dir.path()).unwrap(), newer_path);
+        let (path, m) = ActionManifest::latest_restorable_in(dir.path()).unwrap();
+        assert!(path.display().to_string().contains("clean-undo-100"));
+        assert_eq!(m.actions[0].size, 5);
+        // A dir with only permanent manifests offers nothing to restore.
+        let dir2 = tempfile::tempdir().unwrap();
+        newer.save(dir2.path()).unwrap();
+        assert!(ActionManifest::latest_restorable_in(dir2.path()).is_none());
     }
 }

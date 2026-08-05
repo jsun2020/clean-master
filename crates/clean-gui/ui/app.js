@@ -105,12 +105,17 @@ function toast(msg, isErr) {
   setTimeout(() => { el.classList.add("gone"); setTimeout(() => el.remove(), 350); }, 5200);
 }
 
-function confirmModal(title, body, okLabel, okOnly) {
+/* optLabel (optional): shows a checkbox under the body, unchecked by
+   default; read its state via $("modal-opt-check").checked after OK. */
+function confirmModal(title, body, okLabel, okOnly, optLabel) {
   return new Promise((resolve) => {
     $("modal-title").textContent = title;
     $("modal-body").textContent = body;
     $("modal-ok").textContent = okLabel || t("move_to_bin");
     $("modal-cancel").hidden = Boolean(okOnly);
+    $("modal-opt").hidden = !optLabel;
+    $("modal-opt-check").checked = false;
+    if (optLabel) $("modal-opt-label").textContent = optLabel;
     $("overlay").hidden = false;
     const done = (v) => {
       $("overlay").hidden = true;
@@ -125,10 +130,11 @@ function confirmModal(title, body, okLabel, okOnly) {
 
 /* Honest apply outcome: success -> toast; failures -> explain who holds the
    files (Restart Manager result from the Rust side) in an OK-only dialog. */
-function showApplyResult(res, nounKey) {
+function showApplyResult(res, nounKey, permanent) {
   const noun = t(nounKey);
   if (!res.failed) {
-    toast(tf("toast_recycled", { n: fmtCount(res.deleted), noun, bytes: fmtBytes(res.bytes) }));
+    toast(tf(permanent ? "toast_deleted" : "toast_recycled",
+      { n: fmtCount(res.deleted), noun, bytes: fmtBytes(res.bytes) }));
     return { blockedMsg: null };
   }
   const who = res.holders && res.holders.length
@@ -365,14 +371,16 @@ $("btn-junk-clean").addEventListener("click", async () => {
   junkReport.rules.forEach((r) => { if (junkSelected.has(r.id)) { files += r.files; bytes += r.bytes; } });
   const ok = await confirmModal(
     t("confirm_junk_title"),
-    tf("confirm_junk_body", { files: fmtCount(files), bytes: fmtBytes(bytes) }));
+    tf("confirm_junk_body", { files: fmtCount(files), bytes: fmtBytes(bytes) }),
+    null, false, t("opt_permanent"));
   if (!ok) return;
-  busyShow(t("busy_recycle"));
+  const permanent = $("modal-opt-check").checked;
+  busyShow(permanent ? t("busy_delete") : t("busy_recycle"));
   try {
-    const res = await invoke("junk_apply", { ruleIds: [...junkSelected] });
+    const res = await invoke("junk_apply", { ruleIds: [...junkSelected], permanent });
     junkBlockedRules = new Set(res.blocked_rules || []);
     junkHolders = res.holders || [];
-    junkBlockedMsg = showApplyResult(res, "noun_files").blockedMsg;
+    junkBlockedMsg = showApplyResult(res, "noun_files", permanent).blockedMsg;
     refreshUndo();
     junkScan();
   } catch (err) {

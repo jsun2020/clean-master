@@ -50,6 +50,9 @@ window.CM_I18N = {
 
       busy_recycle: "Moving to Recycle Bin",
       busy_recycle_folders: "Moving folders to Recycle Bin",
+      busy_delete: "Deleting permanently",
+      opt_permanent: "Delete permanently - skip the Recycle Bin, cannot be undone",
+      toast_deleted: "Permanently deleted {n} {noun}, freed {bytes}.",
       busy_restore: "Restoring from Recycle Bin",
       toast_recycled: "Recycled {n} {noun}, freed {bytes}.",
       noun_files: "files",
@@ -230,6 +233,9 @@ window.CM_I18N = {
 
       busy_recycle: "正在移入回收站",
       busy_recycle_folders: "正在将文件夹移入回收站",
+      busy_delete: "正在永久删除",
+      opt_permanent: "永久删除 - 不进回收站，无法撤销",
+      toast_deleted: "已永久删除 {n} 个{noun}，释放 {bytes}。",
       busy_restore: "正在从回收站恢复",
       toast_recycled: "已回收 {n} 个{noun}，释放 {bytes}。",
       noun_files: "文件",

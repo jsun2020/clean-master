@@ -397,3 +397,11 @@ button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(-
   vertical-align: 2px;
 }
 .tag-flag.warn { color: var(--amber); border-color: #e6c583; background: #fdf6e8; }
+
+/* v0.6.1: optional checkbox row in the confirm modal (permanent delete) */
+.modal-opt {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin: 14px 0 2px; font-size: 13px; color: var(--amber, #d97706);
+  cursor: pointer; user-select: none;
+}
+.modal-opt input { margin-top: 2px; accent-color: #d97706; }
