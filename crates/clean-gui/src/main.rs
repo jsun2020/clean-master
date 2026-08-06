@@ -894,21 +894,41 @@ async fn app_uninstall(state: State<'_, AppState>, index: usize) -> Result<AppRe
 async fn undo_status() -> Result<Option<UndoStatusDto>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         // Permanent-delete manifests are audit records with nothing to give
-        // back; the undo panel only ever shows recycle sessions.
-        let Some((path, m)) = ActionManifest::latest_restorable_in(&manifest_dir()) else {
-            return Ok(None);
-        };
-        let restorable: Vec<_> = m
-            .actions
-            .iter()
-            .filter(|a| a.disposition == Disposition::RecycleBin)
-            .collect();
-        Ok(Some(UndoStatusDto {
-            manifest: path.display().to_string(),
-            files: restorable.len(),
-            bytes: restorable.iter().map(|a| a.size).sum(),
-            at_unix: restorable.first().map(|a| a.at_unix).unwrap_or(0),
-        }))
+        // back; the undo panel only ever shows recycle sessions. A session
+        // whose items are no longer in the Recycle Bin (bin emptied, or
+        // everything restored by hand) is retired on sight - offering it
+        // would promise an undo that restores nothing.
+        loop {
+            let Some((path, m)) = ActionManifest::latest_restorable_in(&manifest_dir()) else {
+                return Ok(None);
+            };
+            let entries: Vec<_> = m
+                .actions
+                .iter()
+                .filter(|a| a.disposition == Disposition::RecycleBin)
+                .collect();
+            let at_unix = entries.first().map(|a| a.at_unix).unwrap_or(0);
+            let (files, bytes) = match clean_core::safety::restorable_stats(&m) {
+                Some((0, _)) => {
+                    let dead = path.with_file_name(format!("stale-{}.json", m.session_id));
+                    if std::fs::rename(&path, dead).is_err() {
+                        // Cannot retire (e.g. locked): hide the card this
+                        // round rather than loop on the same manifest.
+                        return Ok(None);
+                    }
+                    continue; // an older session may still be restorable
+                }
+                Some(live) => live,
+                // Bin unlistable: fail open with manifest counts.
+                None => (entries.len(), entries.iter().map(|a| a.size).sum()),
+            };
+            return Ok(Some(UndoStatusDto {
+                manifest: path.display().to_string(),
+                files,
+                bytes,
+                at_unix,
+            }));
+        }
     })
     .await
     .map_err(|e| format!("undo status task failed: {e}"))?

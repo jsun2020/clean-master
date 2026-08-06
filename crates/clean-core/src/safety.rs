@@ -402,6 +402,44 @@ pub fn undo(_manifest: &ActionManifest) -> Result<UndoOutcome, CoreError> {
     ))
 }
 
+/// How much of a manifest the Recycle Bin can still give back: distinct
+/// entry count and byte sum, using the same matching rules as `undo`
+/// (case-insensitive path compare; entries whose original path exists
+/// again are not restorable). Returns `None` when the bin cannot be
+/// listed - callers must fail open (keep offering the manifest) rather
+/// than declare a session dead on a transient error.
+#[cfg(windows)]
+pub fn restorable_stats(manifest: &ActionManifest) -> Option<(usize, u64)> {
+    use std::collections::{HashMap, HashSet};
+    let wanted: HashMap<String, u64> = manifest
+        .actions
+        .iter()
+        .filter(|a| a.disposition == Disposition::RecycleBin)
+        .map(|a| (a.from.to_lowercase(), a.size))
+        .collect();
+    if wanted.is_empty() {
+        return Some((0, 0));
+    }
+    let items = trash::os_limited::list().ok()?;
+    let mut present: HashSet<String> = HashSet::new();
+    for item in items {
+        let original = item.original_path();
+        let key = original.display().to_string().to_lowercase();
+        if wanted.contains_key(&key) && !original.exists() {
+            present.insert(key);
+        }
+    }
+    let bytes = present.iter().map(|k| wanted[k]).sum();
+    Some((present.len(), bytes))
+}
+
+/// The bin cannot be enumerated on this platform; report "unknown" so the
+/// undo panel keeps showing manifest counts (Finder Put Back still works).
+#[cfg(not(windows))]
+pub fn restorable_stats(_manifest: &ActionManifest) -> Option<(usize, u64)> {
+    None
+}
+
 /// Names of running applications that hold open handles to any of `paths`
 /// (the usual reason a Recycle-Bin move fails: Chromium-based apps keep
 /// their %TEMP% files open without FILE_SHARE_DELETE for their lifetime).
@@ -727,6 +765,29 @@ mod tests {
         assert!(file.exists(), "plain files must be refused, not deleted");
         assert_eq!(m.actions.len(), 1);
         assert_eq!(m.actions[0].disposition, Disposition::Permanent);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn restorable_stats_counts_only_bin_present_entries() {
+        // Paths that were never recycled: a real bin listing must report 0
+        // restorable, and a permanent-only manifest short-circuits to 0.
+        let mut m = ActionManifest::new();
+        m.actions.push(Action {
+            from: "C:\\definitely\\missing\\never-recycled-cm-test.tmp".into(),
+            disposition: Disposition::RecycleBin,
+            size: 9,
+            at_unix: 1,
+        });
+        assert_eq!(restorable_stats(&m), Some((0, 0)));
+        let mut p = ActionManifest::new();
+        p.actions.push(Action {
+            from: "C:\\x\\gone.tmp".into(),
+            disposition: Disposition::Permanent,
+            size: 9,
+            at_unix: 1,
+        });
+        assert_eq!(restorable_stats(&p), Some((0, 0)));
     }
 
     #[test]
