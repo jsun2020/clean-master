@@ -750,12 +750,14 @@ $("btn-dev-clean").addEventListener("click", async () => {
     tf("confirm_dev_body", {
       n, bytes: fmtBytes(bytes),
       folders: t(n === 1 ? "word_folder" : "word_folders"),
-    }));
+    }),
+    null, false, t("opt_permanent_dev"));
   if (!ok) return;
-  busyShow(t("busy_recycle_folders"));
+  const permanent = $("modal-opt-check").checked;
+  busyShow(permanent ? t("busy_delete_folders") : t("busy_recycle_folders"));
   try {
-    const res = await invoke("dev_apply", { artifactIndexes: [...devChecked] });
-    showApplyResult(res, "noun_folders");
+    const res = await invoke("dev_apply", { artifactIndexes: [...devChecked], permanent });
+    showApplyResult(res, "noun_folders", permanent);
     refreshUndo();
     $("dev-projects").innerHTML = '<div class="hint">' + t("dev_done") + '</div>';
     $("dev-summary").hidden = true;

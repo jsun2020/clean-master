@@ -59,6 +59,9 @@ window.CM_I18N = {
       dev_tag_stale: "recommended - last used {ago}",
       dev_tag_active: "in use {ago} - rebuild needed after clean",
       opt_permanent: "Delete permanently - skip the Recycle Bin, cannot be undone",
+      opt_permanent_dev:
+        "Delete permanently - much faster for folders with many files, cannot be undone",
+      busy_delete_folders: "Deleting folders permanently",
       toast_deleted: "Permanently deleted {n} {noun}, freed {bytes}.",
       busy_restore: "Restoring from Recycle Bin",
       toast_recycled: "Recycled {n} {noun}, freed {bytes}.",
@@ -249,6 +252,8 @@ window.CM_I18N = {
       dev_tag_stale: "推荐清理 - 最后使用于{ago}",
       dev_tag_active: "使用中（{ago}）- 清理后下次构建需重新生成",
       opt_permanent: "永久删除 - 不进回收站，无法撤销",
+      opt_permanent_dev: "永久删除 - 对包含大量小文件的文件夹快得多，无法撤销",
+      busy_delete_folders: "正在永久删除文件夹",
       toast_deleted: "已永久删除 {n} 个{noun}，释放 {bytes}。",
       busy_restore: "正在从回收站恢复",
       toast_recycled: "已回收 {n} 个{noun}，释放 {bytes}。",

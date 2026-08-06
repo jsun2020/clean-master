@@ -291,6 +291,55 @@ pub fn delete_files_permanently(
     outcome
 }
 
+/// Permanently delete directories - no Recycle Bin, no undo. Opt-in fast
+/// path for dev artifacts: recycling a directory makes the shell process
+/// every file inside it individually (measured ~950 files/s vs ~2,300
+/// files/s for `remove_dir_all` under corporate EDR; see
+/// `examples/dir_recycle_probe.rs`), so a node_modules selection takes
+/// minutes on the recycle path. Deletions are recorded in the manifest as
+/// `Disposition::Permanent` (audit trail; undo skips them). Non-directories
+/// are refused - files stay on `delete_files_permanently`.
+pub fn delete_dirs_permanently(
+    paths: &[(String, u64)],
+    manifest: &mut ActionManifest,
+    mut progress: impl FnMut(usize),
+) -> ApplyOutcome {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut outcome = ApplyOutcome {
+        deleted: 0,
+        bytes: 0,
+        failed: Vec::new(),
+    };
+    for (i, (path, size)) in paths.iter().enumerate() {
+        let abs = std::path::absolute(path)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| path.clone());
+        let result = match std::fs::symlink_metadata(&abs) {
+            Ok(meta) if meta.is_dir() => std::fs::remove_dir_all(&abs).map_err(|e| e.to_string()),
+            Ok(_) => Err("not a directory".into()),
+            Err(e) => Err(e.to_string()),
+        };
+        match result {
+            Ok(()) => {
+                outcome.deleted += 1;
+                outcome.bytes += size;
+                manifest.actions.push(Action {
+                    from: abs,
+                    disposition: Disposition::Permanent,
+                    size: *size,
+                    at_unix: now,
+                });
+            }
+            Err(e) => outcome.failed.push((path.clone(), e)),
+        }
+        progress(i + 1);
+    }
+    outcome
+}
+
 pub struct UndoOutcome {
     pub restored: usize,
     pub missing: usize,
@@ -652,6 +701,32 @@ mod tests {
         assert_eq!(out.deleted, 0);
         assert_eq!(out.failed.len(), 1);
         assert!(sub.exists());
+    }
+
+    #[test]
+    fn permanent_dir_delete_removes_tree_and_refuses_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifact = dir.path().join("node_modules");
+        std::fs::create_dir_all(artifact.join("pkg").join("lib")).unwrap();
+        std::fs::write(artifact.join("pkg").join("lib").join("m.js"), b"x").unwrap();
+        let file = dir.path().join("loose.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let paths = vec![
+            (artifact.display().to_string(), 7),
+            (file.display().to_string(), 1),
+            ("C:\\definitely\\missing\\gone".into(), 1),
+        ];
+        let mut m = ActionManifest::new();
+        let mut last = 0usize;
+        let out = delete_dirs_permanently(&paths, &mut m, |done| last = done);
+        assert_eq!(out.deleted, 1);
+        assert_eq!(out.bytes, 7);
+        assert_eq!(out.failed.len(), 2);
+        assert_eq!(last, paths.len());
+        assert!(!artifact.exists());
+        assert!(file.exists(), "plain files must be refused, not deleted");
+        assert_eq!(m.actions.len(), 1);
+        assert_eq!(m.actions[0].disposition, Disposition::Permanent);
     }
 
     #[test]
