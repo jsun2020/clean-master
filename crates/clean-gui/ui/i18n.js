@@ -115,6 +115,7 @@ window.CM_I18N = {
       panel_dirs: "Largest folders",
       panel_types: "By type",
       panel_ages: "By age (last modified)",
+      ext_click_hint: "Click to show the largest files of this type",
 
       dev_title: "Developer cleanup",
       dev_sub: "Reclaim regenerable dependency and build folders (node_modules, target, venv, bin/obj) per project. Source code and Git history are never touched, and nothing is selected by default.",
@@ -307,6 +308,7 @@ window.CM_I18N = {
       panel_dirs: "最大的文件夹",
       panel_types: "按类型",
       panel_ages: "按修改时间",
+      ext_click_hint: "点击查看该类型最大的文件",
 
       dev_title: "开发者清理",
       dev_sub: "按项目回收可重建的依赖和构建文件夹（node_modules、target、venv、bin/obj）。源代码和 Git 历史绝不会被触碰，且默认不选中任何内容。",

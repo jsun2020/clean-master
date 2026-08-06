@@ -77,6 +77,18 @@ pub fn by_extension(records: &[FileRecord], n: usize) -> Vec<ExtStat> {
     stats
 }
 
+/// Largest files of one `by_extension` group, biggest first. `ext` is the
+/// group key, i.e. the lowercased extension or "(none)" for extensionless.
+pub fn top_files_of_ext<'a>(records: &'a [FileRecord], ext: &str, n: usize) -> Vec<&'a FileRecord> {
+    let mut files: Vec<&FileRecord> = records
+        .iter()
+        .filter(|r| !r.is_dir && r.ext.as_deref().unwrap_or("(none)") == ext)
+        .collect();
+    files.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.path.cmp(&b.path)));
+    files.truncate(n);
+    files
+}
+
 /// Files bucketed by age of last modification relative to `now_unix`.
 pub fn by_age(records: &[FileRecord], now_unix: i64) -> Vec<AgeBucket> {
     let mut buckets = [
@@ -170,6 +182,21 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].name, "big.pdf");
         assert_eq!(top[1].name, "old.pdf");
+    }
+
+    #[test]
+    fn top_files_of_ext_filters_and_sorts_desc() {
+        let recs = fixture();
+        let pdfs = top_files_of_ext(&recs, "pdf", 10);
+        assert_eq!(pdfs.len(), 2);
+        assert_eq!(pdfs[0].name, "big.pdf");
+        assert_eq!(pdfs[1].name, "old.pdf");
+        // "(none)" groups extensionless files; directories never counted.
+        let none = top_files_of_ext(&recs, "(none)", 10);
+        assert_eq!(none.len(), 1);
+        assert_eq!(none[0].name, "noext");
+        // Limit respected.
+        assert_eq!(top_files_of_ext(&recs, "pdf", 1).len(), 1);
     }
 
     #[test]

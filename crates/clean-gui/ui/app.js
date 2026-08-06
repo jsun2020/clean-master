@@ -505,6 +505,7 @@ $("btn-dupes-clean").addEventListener("click", async () => {
 
 let anPath = null;
 let lastAnalyze = null;
+let anOpenExt = null; // extension whose drill-down is expanded
 
 $("btn-an-browse").addEventListener("click", async () => {
   const p = await invoke("pick_folder");
@@ -525,6 +526,7 @@ $("btn-an-scan").addEventListener("click", async () => {
   try {
     const rep = await invoke("analyze_path", { path: anPath });
     lastAnalyze = rep;
+    anOpenExt = null;
     renderAnalyze(rep);
   } catch (err) {
     toast(String(err), true);
@@ -534,12 +536,22 @@ $("btn-an-scan").addEventListener("click", async () => {
   }
 });
 
-function meterRow(name, bytes, maxBytes, extra) {
+function meterRow(name, bytes, maxBytes, extra, full) {
   return '<div class="row-wrap"><div class="row-line">' +
-    '<div class="row-name" title="' + esc(name) + '">' + esc(name) + '</div>' +
+    '<div class="row-name" title="' + esc(full || name) + '">' + esc(name) + '</div>' +
     (extra ? '<div class="row-val" style="color:var(--ink-3);font-weight:400">' + esc(extra) + '</div>' : "") +
     '<div class="row-val">' + esc(fmtBytes(bytes)) + '</div></div>' +
     '<div class="meter"><i style="width:' + Math.max(1, Math.round((bytes / Math.max(1, maxBytes)) * 100)) + '%"></i></div></div>';
+}
+
+// Overview shows paths relative to the analyzed root (the absolute prefix is
+// the same on every row); the full path lives in the hover tooltip.
+function relToRoot(p, root) {
+  if (root && p.length > root.length && p.toLowerCase().startsWith(root.toLowerCase())) {
+    const rest = p.slice(root.length).replace(/^[\\/]+/, "");
+    if (rest) return rest;
+  }
+  return p;
 }
 
 function renderAnalyze(rep) {
@@ -555,11 +567,35 @@ function renderAnalyze(rep) {
     (rep.skipped ? '<div class="sum-item"><div class="k">' + t("sum_unreadable") + '</div><div class="v">' + fmtCount(rep.skipped) + '</div></div>' : "");
 
   const maxF = Math.max(1, ...rep.top_files.map((f) => f.bytes));
-  $("an-files").innerHTML = rep.top_files.map((f) => meterRow(f.path, f.bytes, maxF)).join("") || '<div class="hint">' + t("empty") + '</div>';
+  $("an-files").innerHTML = rep.top_files.map((f) => meterRow(relToRoot(f.path, rep.root), f.bytes, maxF, null, f.path)).join("") || '<div class="hint">' + t("empty") + '</div>';
   const maxD = Math.max(1, ...rep.top_dirs.map((d) => d.bytes));
-  $("an-dirs").innerHTML = rep.top_dirs.map((d) => meterRow(d.path, d.bytes, maxD, filesLabel(d.files))).join("") || '<div class="hint">' + t("empty") + '</div>';
+  $("an-dirs").innerHTML = rep.top_dirs.map((d) => meterRow(relToRoot(d.path, rep.root), d.bytes, maxD, filesLabel(d.files), d.path)).join("") || '<div class="hint">' + t("empty") + '</div>';
   const maxE = Math.max(1, ...rep.exts.map((x) => x.bytes));
-  $("an-exts").innerHTML = rep.exts.map((x) => meterRow("." + x.ext, x.bytes, maxE, filesLabel(x.count))).join("") || '<div class="hint">' + t("empty") + '</div>';
+  $("an-exts").innerHTML = rep.exts.map((x, i) => {
+    const open = anOpenExt === x.ext;
+    const subMax = open && x.top.length ? Math.max(1, x.top[0].bytes) : 1;
+    return '<div class="ext-group' + (open ? " open" : "") + '">' +
+      '<div class="row-wrap ext-row" data-ext-i="' + i + '" title="' + esc(t("ext_click_hint")) + '"><div class="row-line">' +
+      '<span class="caret"></span>' +
+      '<div class="row-name">.' + esc(x.ext) + '</div>' +
+      '<div class="row-val" style="color:var(--ink-3);font-weight:400">' + esc(filesLabel(x.count)) + '</div>' +
+      '<div class="row-val">' + esc(fmtBytes(x.bytes)) + '</div></div>' +
+      '<div class="meter"><i style="width:' + Math.max(1, Math.round((x.bytes / maxE) * 100)) + '%"></i></div></div>' +
+      (open
+        ? '<div class="sub-rows">' +
+          (x.top.map((f) => meterRow(relToRoot(f.path, rep.root), f.bytes, subMax, null, f.path)).join("") ||
+            '<div class="hint">' + t("empty") + '</div>') +
+          '</div>'
+        : "") +
+      '</div>';
+  }).join("") || '<div class="hint">' + t("empty") + '</div>';
+  document.querySelectorAll("#an-exts .ext-row").forEach((el) => {
+    el.addEventListener("click", () => {
+      const ext = rep.exts[Number(el.dataset.extI)].ext;
+      anOpenExt = anOpenExt === ext ? null : ext;
+      renderAnalyze(rep);
+    });
+  });
   const maxA = Math.max(1, ...rep.ages.map((a) => a.bytes));
   $("an-ages").innerHTML = rep.ages.map((a) => meterRow(trAge(a.label), a.bytes, maxA, filesLabel(a.count))).join("");
   $("an-panels").hidden = false;

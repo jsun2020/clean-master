@@ -168,6 +168,8 @@ struct ExtDto {
     ext: String,
     count: u64,
     bytes: u64,
+    /// Largest files of this type, biggest first (drill-down detail).
+    top: Vec<FileDto>,
 }
 
 #[derive(Serialize)]
@@ -532,6 +534,13 @@ async fn analyze_path(app: AppHandle, path: String) -> Result<AnalyzeDto, String
             exts: report::by_extension(records, 12)
                 .into_iter()
                 .map(|e| ExtDto {
+                    top: report::top_files_of_ext(records, &e.ext, 25)
+                        .into_iter()
+                        .map(|r| FileDto {
+                            path: r.path.clone(),
+                            bytes: r.size,
+                        })
+                        .collect(),
                     ext: e.ext,
                     count: e.count,
                     bytes: e.bytes,
