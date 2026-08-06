@@ -1,6 +1,6 @@
 [package]
 name = "clean-gui"
-version = "0.6.3"
+version = "0.6.4"
 edition.workspace = true
 license.workspace = true
 description = "Clean Master - desktop GUI for the clean-core disk cleaning engine"
