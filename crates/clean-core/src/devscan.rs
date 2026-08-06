@@ -140,8 +140,8 @@ pub struct DevArtifact {
 /// the next (re)build regenerates it.
 pub const DEV_STALE_DAYS: i64 = 30;
 
-/// Pure recommendation heuristic. Unknown activity (0) is never recommended
-/// - a recommendation must rest on evidence, same rule the App Manager flags
+/// Pure recommendation heuristic. Unknown activity (0) is never recommended:
+/// a recommendation must rest on evidence, same rule the App Manager flags
 /// follow. Deleting is safe either way (artifacts are regenerable by
 /// construction); this only ranks convenience.
 pub fn is_recommended(now_unix: i64, last_used_unix: i64) -> bool {
