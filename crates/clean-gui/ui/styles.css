@@ -105,7 +105,8 @@ body {
 
 /* ------------------------------------------------------------- layout -- */
 .main { flex: 1; overflow-y: auto; padding: 30px 34px 110px; scroll-behavior: smooth; }
-.view { max-width: 880px; margin: 0 auto; }
+/* Fluid: fill the window up to a readable cap so big monitors are used. */
+.view { max-width: 1360px; margin: 0 auto; }
 
 .head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
 .hero-num {
@@ -202,6 +203,21 @@ body {
 .meter { height: 3px; border-radius: 2px; background: var(--emerald-soft); margin-top: 5px; overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--emerald); border-radius: 2px; }
 
+/* by-type drill-down: overview row expands to its largest files on click */
+.ext-row { cursor: pointer; }
+.ext-row:hover .row-name { color: var(--emerald); }
+.caret {
+  flex-shrink: 0; width: 0; height: 0; align-self: center;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--ink-3); transition: transform .15s;
+}
+.ext-group.open .caret { transform: rotate(90deg); border-left-color: var(--emerald); }
+.sub-rows {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 8px 0 6px 4px; padding-left: 13px;
+  border-left: 2px solid var(--emerald-soft);
+}
+
 /* checkbox */
 .chk { position: relative; width: 17px; height: 17px; flex: none; cursor: pointer; }
 .chk input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
@@ -281,8 +297,11 @@ body {
 }
 
 /* ------------------------------------------------------------ analyze -- */
-.panel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+/* minmax(min(420px,100%), 1fr): tracks can never be inflated past the view
+   by long nowrap paths (auto minimums were the horizontal-overflow bug). */
+.panel-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 14px; }
 .panel {
+  min-width: 0;
   background: var(--card); border: 1px solid var(--line); border-radius: 13px;
   box-shadow: var(--shadow); padding: 16px 18px;
   animation: rise .35s both;
@@ -368,7 +387,7 @@ body {
 button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(--emerald-hi); outline-offset: 2px; }
 
 /* --------------------------------------------- disk files sub-tabs ------ */
-.subtabs { display: flex; gap: 8px; max-width: 880px; margin: 0 auto 18px; }
+.subtabs { display: flex; gap: 8px; max-width: 1360px; margin: 0 auto 18px; }
 .subtab {
   font: inherit; font-size: 13px; font-weight: 650; color: var(--ink-2);
   background: transparent; border: 1px solid transparent; border-radius: 20px;
