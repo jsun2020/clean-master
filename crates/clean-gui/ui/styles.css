@@ -405,3 +405,19 @@ button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(-
   cursor: pointer; user-select: none;
 }
 .modal-opt input { margin-top: 2px; accent-color: #d97706; }
+
+/* v0.6.2: Developer toolbar (recommend/all/clear) + activity tags */
+.dev-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; margin: 2px 0 14px; padding: 10px 14px;
+  background: var(--card, #fff); border-radius: 12px;
+  border: 1px solid rgba(6, 95, 70, 0.10);
+}
+.dev-assure { font-size: 12.5px; color: var(--muted, #6b7280); max-width: 60%; }
+.dev-toolbar-btns { display: flex; gap: 8px; flex-shrink: 0; }
+.tag-rec, .tag-active {
+  display: inline-block; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; vertical-align: 1px;
+}
+.tag-rec { background: rgba(16, 185, 129, 0.12); color: #047857; }
+.tag-active { background: rgba(217, 119, 6, 0.12); color: #b45309; }

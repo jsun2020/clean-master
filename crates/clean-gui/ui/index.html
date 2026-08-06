@@ -165,6 +165,14 @@
       <div class="progress-line" id="dev-progress" hidden><div class="bar indeterminate"></div><span class="progress-label" id="dev-progress-label"></span></div>
 
       <div class="summary-strip" id="dev-summary" hidden></div>
+      <div class="dev-toolbar" id="dev-toolbar" hidden>
+        <span class="dev-assure" id="dev-assure" data-i18n="dev_assure">Everything listed is a regenerable build artifact - source code and .git are never touched, and folders go to the Recycle Bin.</span>
+        <div class="dev-toolbar-btns">
+          <button class="btn small" id="btn-dev-recommend"></button>
+          <button class="btn small ghost" id="btn-dev-all" data-i18n="select_all">Select all</button>
+          <button class="btn small ghost" id="btn-dev-none" data-i18n="select_none">Clear</button>
+        </div>
+      </div>
       <div class="cards" id="dev-projects"></div>
 
       <div class="apply-bar" id="dev-applybar" hidden>

@@ -129,6 +129,23 @@ pub struct DevArtifact {
     pub bytes: u64,
     pub files: u64,
     pub restore_hint: String,
+    /// Newest modified time (unix seconds) of any file inside the artifact -
+    /// a free by-product of the sizing walk. Approximates the last build /
+    /// install; 0 when unknown.
+    pub last_used_unix: i64,
+}
+
+/// An artifact untouched for this long is recommended for cleanup: the
+/// project is not being actively built, so reclaiming costs nothing until
+/// the next (re)build regenerates it.
+pub const DEV_STALE_DAYS: i64 = 30;
+
+/// Pure recommendation heuristic. Unknown activity (0) is never recommended
+/// - a recommendation must rest on evidence, same rule the App Manager flags
+/// follow. Deleting is safe either way (artifacts are regenerable by
+/// construction); this only ranks convenience.
+pub fn is_recommended(now_unix: i64, last_used_unix: i64) -> bool {
+    last_used_unix > 0 && now_unix - last_used_unix > DEV_STALE_DAYS * 86400
 }
 
 /// A project (a directory holding a recognized manifest) and its artifacts.
@@ -246,21 +263,23 @@ fn discover(dir: &Path, hits: &mut Vec<Hit>, progress: &(dyn Fn(u64) + Sync), se
     }
 }
 
-/// Total size and file count of a directory subtree, using the shared
-/// EDR-safe parallel walker (enumeration-cached metadata, no per-file stat).
-fn size_of(dir: &Path) -> (u64, u64) {
+/// Total size, file count and newest file mtime of a directory subtree,
+/// using the shared EDR-safe parallel walker (enumeration-cached metadata,
+/// no per-file stat) - the mtime is free, the records already carry it.
+fn size_of(dir: &Path) -> (u64, u64, i64) {
     match WalkBackend.scan(dir, &ScanOptions::default(), &|_| {}) {
         Ok(outcome) => {
-            let files = outcome.records.iter().filter(|r| !r.is_dir).count() as u64;
-            let bytes = outcome
-                .records
-                .iter()
-                .filter(|r| !r.is_dir)
-                .map(|r| r.size)
-                .sum();
-            (bytes, files)
+            let mut files = 0u64;
+            let mut bytes = 0u64;
+            let mut newest = 0i64;
+            for r in outcome.records.iter().filter(|r| !r.is_dir) {
+                files += 1;
+                bytes += r.size;
+                newest = newest.max(r.modified);
+            }
+            (bytes, files, newest)
         }
-        Err(_) => (0, 0),
+        Err(_) => (0, 0, 0),
     }
 }
 
@@ -275,17 +294,17 @@ pub fn scan_projects(root: &Path, progress: &(dyn Fn(u64) + Sync)) -> Vec<DevPro
 
     // Size every artifact in parallel (the slow part - a node_modules can hold
     // 100k files). Independent subtrees, so this is embarrassingly parallel.
-    let sized: Vec<(Hit, u64, u64)> = hits
+    let sized: Vec<(Hit, u64, u64, i64)> = hits
         .into_par_iter()
         .map(|hit| {
-            let (bytes, files) = size_of(&hit.path);
-            (hit, bytes, files)
+            let (bytes, files, newest) = size_of(&hit.path);
+            (hit, bytes, files, newest)
         })
         .collect();
 
     // Group by project root (stable, sorted path order within a project).
     let mut by_project: BTreeMap<PathBuf, Vec<DevArtifact>> = BTreeMap::new();
-    for (hit, bytes, files) in sized {
+    for (hit, bytes, files, newest) in sized {
         by_project
             .entry(hit.project_root.clone())
             .or_default()
@@ -301,6 +320,7 @@ pub fn scan_projects(root: &Path, progress: &(dyn Fn(u64) + Sync)) -> Vec<DevPro
                 bytes,
                 files,
                 restore_hint: hit.kind.restore_hint.to_string(),
+                last_used_unix: newest,
             });
     }
 
@@ -461,6 +481,40 @@ mod tests {
         );
         let projects = scan_projects(root, &|_| {});
         assert!(projects.is_empty(), ".git subtree must be skipped entirely");
+    }
+
+    #[test]
+    fn recommended_only_when_stale_with_evidence() {
+        let now = 1_800_000_000i64;
+        let day = 86_400i64;
+        // Fresh build: not recommended.
+        assert!(!is_recommended(now, now - 2 * day));
+        // Just under the threshold: not recommended.
+        assert!(!is_recommended(now, now - (DEV_STALE_DAYS - 1) * day));
+        // Past the threshold: recommended.
+        assert!(is_recommended(now, now - (DEV_STALE_DAYS + 1) * day));
+        // Unknown activity never creates a recommendation.
+        assert!(!is_recommended(now, 0));
+    }
+
+    #[test]
+    fn artifact_carries_newest_mtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        touch(&root.join("app").join("package.json"), 10);
+        touch(&root.join("app").join("node_modules").join("x.js"), 100);
+        let projects = scan_projects(root, &|_| {});
+        assert_eq!(projects.len(), 1);
+        // Freshly written fixture: mtime must be present and recent, so the
+        // artifact must NOT be recommended.
+        let a = &projects[0].artifacts[0];
+        assert!(a.last_used_unix > 0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!(now - a.last_used_unix < 3600);
+        assert!(!is_recommended(now, a.last_used_unix));
     }
 
     #[test]
