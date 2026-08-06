@@ -563,6 +563,8 @@ struct DevArtifactDto {
     bytes: u64,
     files: u64,
     restore_hint: String,
+    last_used_unix: i64,
+    recommended: bool,
 }
 
 #[derive(Serialize)]
@@ -612,6 +614,10 @@ async fn dev_scan(
     let total_bytes: u64 = projects.iter().map(|p| p.total_bytes).sum();
     let artifact_count: usize = projects.iter().map(|p| p.artifacts.len()).sum();
 
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let mut dto_projects = Vec::new();
     for p in projects.iter().take(MAX_DEV_PROJECTS_IN_UI) {
         let mut arts = Vec::new();
@@ -627,6 +633,8 @@ async fn dev_scan(
                 bytes: a.bytes,
                 files: a.files,
                 restore_hint: a.restore_hint.clone(),
+                last_used_unix: a.last_used_unix,
+                recommended: clean_core::devscan::is_recommended(now_unix, a.last_used_unix),
             });
         }
         dto_projects.push(DevProjectDto {

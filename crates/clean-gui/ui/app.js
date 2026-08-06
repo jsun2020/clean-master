@@ -595,6 +595,7 @@ $("btn-dev-scan").addEventListener("click", async () => {
   $("dev-progress").hidden = false;
   $("dev-projects").innerHTML = "";
   $("dev-summary").hidden = true;
+  $("dev-toolbar").hidden = true;
   $("dev-applybar").hidden = true;
   $("btn-dev-scan").disabled = true;
   try {
@@ -609,10 +610,18 @@ $("btn-dev-scan").addEventListener("click", async () => {
   }
 });
 
+/* All artifacts recommended for cleanup (stale > 30 days). */
+function devRecommended() {
+  const out = [];
+  devReport.projects.forEach((p) => p.artifacts.forEach((a) => { if (a.recommended) out.push(a); }));
+  return out;
+}
+
 function renderDev() {
   const rep = devReport;
   if (!rep.project_count) {
     $("dev-summary").hidden = true;
+    $("dev-toolbar").hidden = true;
     $("dev-projects").innerHTML =
       '<div class="hint">' + t("dev_none") + '<br><b>' +
       esc(rep.root) + '</b><br><br>' + t("dev_none_hint") + '</div>';
@@ -627,6 +636,16 @@ function renderDev() {
     '<div class="sum-item"><div class="k">' + t("sum_reclaimable") + '</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
     (rep.truncated ? '<div class="sum-item"><div class="k">' + t("sum_showing") + '</div><div class="v">' + tf("top_n", { n: rep.projects.length }) + '</div></div>' : "");
 
+  // Toolbar: the recommend button carries its own count + size so the user
+  // sees what one click will select before clicking it.
+  const rec = devRecommended();
+  const recBytes = rec.reduce((s, a) => s + a.bytes, 0);
+  $("dev-toolbar").hidden = false;
+  $("btn-dev-recommend").textContent = rec.length
+    ? tf("select_recommended", { n: rec.length, bytes: fmtBytes(recBytes) })
+    : t("select_recommended_none");
+  $("btn-dev-recommend").disabled = rec.length === 0;
+
   let html = "";
   for (const p of rep.projects) {
     const allChecked = p.artifacts.length > 0 && p.artifacts.every((a) => devChecked.has(a.index));
@@ -637,12 +656,20 @@ function renderDev() {
       '<div class="cat-bytes">' + esc(fmtBytes(p.total_bytes)) + '</div></div>';
     for (const a of p.artifacts) {
       const badge = (DEV_KIND_ICON[a.kind_id] || "dev").toUpperCase();
+      // Activity tag: stale = green "recommended", recent = amber heads-up
+      // that the next build will re-download/re-compile. Unknown = no tag.
+      let tag = "";
+      if (a.recommended) {
+        tag = ' <span class="tag-rec">' + esc(tf("dev_tag_stale", { ago: timeAgo(a.last_used_unix) })) + '</span>';
+      } else if (a.last_used_unix > 0) {
+        tag = ' <span class="tag-active">' + esc(tf("dev_tag_active", { ago: timeAgo(a.last_used_unix) })) + '</span>';
+      }
       html += '<div class="rule-row" title="' + esc(a.path) + '">' +
         '<label class="chk"><input type="checkbox" data-art="' + a.index + '" data-proj-of="' + esc(p.root) + '"' +
         (devChecked.has(a.index) ? " checked" : "") + '><span class="box"></span></label>' +
         '<span class="kind-badge">' + esc(badge) + '</span>' +
         '<div class="rule-detail"><div class="rule-name">' + esc(a.dir_name) +
-        ' <span class="rule-count">' + esc(trKind(a.kind_id, a.kind_label)) + '</span></div>' +
+        ' <span class="rule-count">' + esc(trKind(a.kind_id, a.kind_label)) + '</span>' + tag + '</div>' +
         '<div class="rule-base">' + esc(tf("restored_by", { hint: trHint(a.restore_hint) })) + '</div></div>' +
         '<div class="rule-count">' + filesLabel(a.files) + '</div>' +
         '<div class="rule-bytes">' + esc(fmtBytes(a.bytes)) + '</div></div>';
@@ -677,6 +704,29 @@ function syncProjBoxes() {
   });
 }
 
+/* Replace the selection wholesale (toolbar buttons), then re-render so row
+   and project checkboxes reflect it. */
+function devSetSelection(indexes) {
+  devChecked.clear();
+  indexes.forEach((i) => devChecked.add(i));
+  renderDev();
+}
+
+$("btn-dev-recommend").addEventListener("click", () => {
+  if (!devReport) return;
+  devSetSelection(devRecommended().map((a) => a.index));
+});
+$("btn-dev-all").addEventListener("click", () => {
+  if (!devReport) return;
+  const all = [];
+  devReport.projects.forEach((p) => p.artifacts.forEach((a) => all.push(a.index)));
+  devSetSelection(all);
+});
+$("btn-dev-none").addEventListener("click", () => {
+  if (!devReport) return;
+  devSetSelection([]);
+});
+
 function devSelectionChanged() {
   let bytes = 0;
   const byIndex = new Map();
@@ -709,6 +759,7 @@ $("btn-dev-clean").addEventListener("click", async () => {
     refreshUndo();
     $("dev-projects").innerHTML = '<div class="hint">' + t("dev_done") + '</div>';
     $("dev-summary").hidden = true;
+    $("dev-toolbar").hidden = true;
     $("dev-applybar").hidden = true;
   } catch (err) {
     toast(String(err), true);
