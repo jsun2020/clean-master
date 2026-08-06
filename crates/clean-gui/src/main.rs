@@ -12,7 +12,8 @@ use clean_core::dupes::{find_duplicates, DupeGroup, DupeOptions};
 use clean_core::report;
 use clean_core::rules::{builtin_rules, evaluate_all_with_progress};
 use clean_core::safety::{
-    delete_files_permanently, deletion_allowed, recycle_files, ActionManifest, Disposition,
+    delete_dirs_permanently, delete_files_permanently, deletion_allowed, recycle_files,
+    ActionManifest, Disposition,
 };
 use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
 use serde::Serialize;
@@ -668,7 +669,9 @@ async fn dev_apply(
     app: AppHandle,
     state: State<'_, AppState>,
     artifact_indexes: Vec<usize>,
+    permanent: Option<bool>,
 ) -> Result<ApplyDto, String> {
+    let permanent = permanent.unwrap_or(false);
     let targets: Vec<(String, u64)> = {
         let dev = state.dev.lock().map_err(|_| "state lock poisoned")?;
         if dev.is_empty() {
@@ -693,13 +696,35 @@ async fn dev_apply(
             .collect();
         let total = filtered.len();
         let mut manifest = ActionManifest::new();
-        // trash::delete recycles each directory as a single operation.
-        let outcome = recycle_files(&filtered, &mut manifest, |done| {
+        let emit = |done: usize| {
             let _ = app2.emit(
                 "apply-progress",
                 serde_json::json!({ "done": done, "total": total }),
             );
-        });
+        };
+        let outcome = if permanent {
+            // Opt-in fast path: recycling a directory makes the shell touch
+            // every file inside it (~950 files/s under EDR), so a large
+            // node_modules selection takes minutes. remove_dir_all skips the
+            // Recycle Bin entirely; the manifest still records each folder.
+            delete_dirs_permanently(&filtered, &mut manifest, emit)
+        } else {
+            // One shell transaction per directory (they are few and huge)
+            // so progress ticks per folder instead of freezing until done.
+            let mut merged = clean_core::safety::ApplyOutcome {
+                deleted: 0,
+                bytes: 0,
+                failed: Vec::new(),
+            };
+            for (done, item) in filtered.iter().enumerate() {
+                let one = recycle_files(std::slice::from_ref(item), &mut manifest, |_| {});
+                merged.deleted += one.deleted;
+                merged.bytes += one.bytes;
+                merged.failed.extend(one.failed);
+                emit(done + 1);
+            }
+            merged
+        };
         let manifest_path = if manifest.actions.is_empty() {
             None
         } else {
