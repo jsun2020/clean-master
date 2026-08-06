@@ -123,10 +123,11 @@ pub fn classify(
     }
     if let Some(inst) = install_unix {
         let old = (now_unix - inst) / SECS_PER_DAY > OLD_INSTALL_DAYS;
-        // An old install only counts when usage is also stale (or unknown
-        // usage, in which case the install date is the only evidence we have
-        // AND it must be old; recently-used old installs are healthy apps).
-        let stale = stale_days.map(|d| d > OLD_STALE_USE_DAYS).unwrap_or(true);
+        // An old install only counts with positive evidence that usage is
+        // also stale. Unknown usage is NOT evidence (same principle as
+        // devscan's is_recommended): "installed long ago, usage unknown"
+        // describes most healthy software and must never become a suggestion.
+        let stale = stale_days.map(|d| d > OLD_STALE_USE_DAYS).unwrap_or(false);
         if old && stale {
             flags.push("old".to_string());
         }
@@ -423,8 +424,13 @@ mod tests {
         let install = Some(NOW - 400 * DAY);
         // Old install but actively used -> healthy, no flag.
         assert!(classify(NOW, install, Some(NOW - 10 * DAY), false).is_empty());
-        // Old install, usage unknown -> "old" on install-date evidence.
-        assert_eq!(classify(NOW, install, None, false), vec!["old"]);
+        // Old install, usage unknown -> no staleness evidence, no flag.
+        assert!(classify(NOW, install, None, false).is_empty());
+        // Old install with known-stale usage -> "old".
+        assert_eq!(
+            classify(NOW, install, Some(NOW - 120 * DAY), false),
+            vec!["old"]
+        );
         // Recent install -> nothing.
         assert!(classify(NOW, Some(NOW - 100 * DAY), None, false).is_empty());
     }
