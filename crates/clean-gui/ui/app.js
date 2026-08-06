@@ -814,9 +814,20 @@ function renderApps() {
     '<div class="sum-item"><div class="k">' + t("sum_apps") + '</div><div class="v">' + fmtCount(rep.app_count) + '</div></div>' +
     '<div class="sum-item"><div class="k">' + t("sum_total") + '</div><div class="v"><em>' + esc(fmtBytes(rep.total_bytes)) + '</em></div></div>' +
     '<div class="sum-item"><div class="k">' + t("sum_flagged") + '</div><div class="v">' + fmtCount(rep.flagged_count) + '</div></div>';
+  // A filter chip with nothing behind it is a dead control - hide it. If the
+  // active filter just became empty (e.g. after a rescan), fall back to All.
+  const flagCounts = {};
+  for (const a of rep.apps) {
+    for (const f of a.flags) flagCounts[f] = (flagCounts[f] || 0) + 1;
+  }
+  const chipEmpty = (f) =>
+    f === "flagged" ? rep.flagged_count === 0 : f !== "all" && !flagCounts[f];
+  if (chipEmpty(appsFilter)) appsFilter = "all";
   $("apps-chips").hidden = false;
-  document.querySelectorAll("#apps-chips .chip").forEach((c) =>
-    c.classList.toggle("active", c.dataset.filter === appsFilter));
+  document.querySelectorAll("#apps-chips .chip").forEach((c) => {
+    c.hidden = chipEmpty(c.dataset.filter);
+    c.classList.toggle("active", c.dataset.filter === appsFilter);
+  });
 
   if (!rep.apps.length) {
     $("apps-list").innerHTML = '<div class="hint">' + t("apps_none") + '</div>';
