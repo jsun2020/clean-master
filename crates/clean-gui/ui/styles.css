@@ -206,6 +206,8 @@ body {
 /* by-type drill-down: overview row expands to its largest files on click */
 .ext-row { cursor: pointer; }
 .ext-row:hover .row-name { color: var(--emerald); }
+.reveal-row { cursor: pointer; }
+.reveal-row:hover .row-name { color: var(--emerald); }
 .caret {
   flex-shrink: 0; width: 0; height: 0; align-self: center;
   border-top: 4px solid transparent; border-bottom: 4px solid transparent;
