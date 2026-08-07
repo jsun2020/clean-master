@@ -10,6 +10,24 @@ telemetry. Two front ends over the same engine:
 
 See `prd.md` for the full product definition.
 
+## Download
+
+Portable builds are on the
+[**latest release**](https://github.com/jsun2020/clean-master/releases/latest):
+
+- `CleanMaster-v*-windows-x64-portable.zip` - `clean-master.exe` (GUI) +
+  `clean.exe` (CLI); unzip and run. Needs the WebView2 runtime
+  (preinstalled on Windows 10/11).
+- `CleanMaster-v*-macos-arm64.zip` - unsigned `Clean Master.app`;
+  right-click > Open once (or `xattr -cr "Clean Master.app"`) to pass
+  Gatekeeper.
+
+Each zip ships with a `.sha256` checksum file. Releases are published
+automatically by `.github/workflows/release.yml`: bump the version in
+`crates/clean-gui/Cargo.toml` + `tauri.conf.json`, then push a matching
+tag (`git tag v0.6.9 && git push origin v0.6.9`) - the workflow refuses
+mismatched tags.
+
 ## Clean Master (GUI)
 
 ```
