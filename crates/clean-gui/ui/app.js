@@ -53,7 +53,8 @@ function setLang(next) {
   applyStatic();
   // Re-render whatever data is on screen in the new language.
   if (junkReport) renderJunk();
-  else { $("junk-hero").innerHTML = t("scanning") + '<span class="dots"></span>'; $("junk-sub").textContent = t("junk_scan_sub"); }
+  else if (junkScanning) { $("junk-hero").innerHTML = t("scanning") + '<span class="dots"></span>'; $("junk-sub").textContent = t("junk_scan_sub"); }
+  else junkIdle();
   if (dupesReport) renderDupes();
   if (lastAnalyze) renderAnalyze(lastAnalyze);
   if (devReport) renderDev();
@@ -223,8 +224,23 @@ let junkBlockedMsg = null;
    headline, until the user closes the app and hits Rescan. */
 let junkBlockedRules = new Set();
 let junkHolders = [];
+let junkScanning = false;
+
+/* No scan runs until the user asks for one: scanning at startup costs a full
+   disk walk on every launch (expensive under EDR) for a screen the user may
+   not even be here for. Same lazy pattern as every other view. */
+function junkIdle() {
+  $("junk-hero").textContent = t("junk_hero_idle");
+  $("junk-sub").textContent = t("junk_idle_sub");
+}
 
 async function junkScan() {
+  junkScanning = true;
+  const btn = $("btn-junk-rescan");
+  btn.dataset.i18n = "rescan";
+  btn.textContent = t("rescan");
+  btn.classList.remove("primary");
+  btn.classList.add("ghost");
   $("junk-hero").innerHTML = t("scanning") + '<span class="dots"></span>';
   $("junk-sub").textContent = t("junk_scan_sub");
   $("junk-progress").classList.add("on");
@@ -244,6 +260,7 @@ async function junkScan() {
     toast(String(err), true);
     $("junk-hero").textContent = t("scan_failed");
   } finally {
+    junkScanning = false;
     $("junk-progress").classList.remove("on");
     $("btn-junk-rescan").disabled = false;
   }
@@ -972,5 +989,5 @@ $("btn-undo").addEventListener("click", async () => {
 // --------------------------------------------------------------- init --
 
 applyStatic();
+junkIdle();
 refreshUndo();
-junkScan();
