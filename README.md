@@ -8,8 +8,6 @@ telemetry. Two front ends over the same engine:
   (Tauri 2, single portable binary; assets embedded, no WebView bundled -
   uses the system WebView2 runtime on Windows 10/11, WKWebView on macOS)
 
-See `prd.md` for the full product definition.
-
 ## Download
 
 Portable builds are on the
@@ -76,7 +74,7 @@ clean undo                    # restore everything from the last apply
 clean rules list              # every junk rule + why it is safe
 ```
 
-## Safety model (non-negotiable, see prd.md section 7)
+## Safety model (non-negotiable)
 
 - Dry run is the default everywhere; deletion requires `--apply` plus a typed
   confirmation (`--yes` skips the prompt for scripting).
@@ -151,3 +149,7 @@ up to 1024 px).
 - First scan of a cold, never-enumerated tree on an EDR-managed machine can be
   much slower than the numbers above; warm rescans are fast. V2's NTFS MFT
   backend bypasses this entirely.
+
+## License
+
+MIT - see [LICENSE](LICENSE).
