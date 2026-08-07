@@ -962,6 +962,37 @@ async fn undo_last() -> Result<UndoResultDto, String> {
     .map_err(|e| format!("undo task failed: {e}"))?
 }
 
+/// Open the system file manager with `path` selected, so the user can view
+/// or manually delete it. Analyze stays read-only in-app: this never touches
+/// the file, and args are passed as a vector (no shell string to inject into).
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if !std::path::Path::new(&path).exists() {
+            return Err(format!("No longer exists: {path}"));
+        }
+        if cfg!(target_os = "windows") {
+            // Explorer's exit code is meaningless (1 even on success): spawn only.
+            std::process::Command::new("explorer")
+                .arg(format!("/select,{path}"))
+                .spawn()
+                .map_err(|e| format!("Could not open Explorer: {e}"))?;
+            Ok(())
+        } else if cfg!(target_os = "macos") {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| format!("Could not open Finder: {e}"))?;
+            Ok(())
+        } else {
+            Err("Reveal is not supported on this platform.".to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("reveal task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn pick_folder() -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -987,6 +1018,7 @@ fn main() {
             apps_scan,
             app_uninstall,
             analyze_path,
+            reveal_path,
             undo_status,
             undo_last,
             pick_folder

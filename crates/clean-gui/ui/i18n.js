@@ -33,6 +33,7 @@ window.CM_I18N = {
       working: "Working",
       empty: "Empty",
 
+      reveal_hint: "Click to open its location",
       junk_hero_idle: "Ready to scan",
       junk_idle_sub: "Click Scan to check known-safe junk locations. Nothing is deleted during a scan.",
       junk_scan_sub: "Looking through known-safe junk locations. Nothing is deleted during a scan.",
@@ -229,6 +230,7 @@ window.CM_I18N = {
       working: "处理中",
       empty: "空",
 
+      reveal_hint: "点击打开所在位置",
       junk_hero_idle: "准备就绪",
       junk_idle_sub: "点击“扫描”检查已知安全的垃圾位置。扫描过程中不会删除任何文件。",
       junk_scan_sub: "正在检查已知安全的垃圾位置。扫描过程中不会删除任何文件。",

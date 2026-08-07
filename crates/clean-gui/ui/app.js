@@ -553,9 +553,16 @@ $("btn-an-scan").addEventListener("click", async () => {
   }
 });
 
+/* Rows with a concrete path (full) are reveal targets: clicking opens the
+   file manager with the item selected so the user can view or manually
+   delete it - the second layer of Analyze, which itself stays read-only. */
 function meterRow(name, bytes, maxBytes, extra, full) {
-  return '<div class="row-wrap"><div class="row-line">' +
-    '<div class="row-name" title="' + esc(full || name) + '">' + esc(name) + '</div>' +
+  const attrs = full
+    ? ' reveal-row" data-path="' + esc(full)
+    : "";
+  const title = full ? full + "\n" + t("reveal_hint") : name;
+  return '<div class="row-wrap' + attrs + '"><div class="row-line">' +
+    '<div class="row-name" title="' + esc(title) + '">' + esc(name) + '</div>' +
     (extra ? '<div class="row-val" style="color:var(--ink-3);font-weight:400">' + esc(extra) + '</div>' : "") +
     '<div class="row-val">' + esc(fmtBytes(bytes)) + '</div></div>' +
     '<div class="meter"><i style="width:' + Math.max(1, Math.round((bytes / Math.max(1, maxBytes)) * 100)) + '%"></i></div></div>';
@@ -611,6 +618,12 @@ function renderAnalyze(rep) {
       const ext = rep.exts[Number(el.dataset.extI)].ext;
       anOpenExt = anOpenExt === ext ? null : ext;
       renderAnalyze(rep);
+    });
+  });
+  document.querySelectorAll("#an-panels .reveal-row").forEach((el) => {
+    el.addEventListener("click", async () => {
+      try { await invoke("reveal_path", { path: el.dataset.path }); }
+      catch (err) { toast(String(err), true); }
     });
   });
   const maxA = Math.max(1, ...rep.ages.map((a) => a.bytes));
