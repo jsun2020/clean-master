@@ -1,0 +1,142 @@
+name: Release
+
+# Tag-driven portable release: pushing a tag like v0.6.9 builds the Windows
+# portable zip and the macOS .app zip, verifies the archives actually contain
+# the binaries, and publishes a GitHub Release with sha256 checksums.
+# The tag MUST match the version in crates/clean-gui/Cargo.toml and
+# tauri.conf.json - the guard below fails the run on any mismatch.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: build windows portable
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify tag matches the app version
+        shell: pwsh
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $cargoVersion = (Select-String -Path crates/clean-gui/Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
+          $confVersion = (Get-Content crates/clean-gui/tauri.conf.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tagVersion cargo=$cargoVersion tauri.conf=$confVersion"
+          if ($tagVersion -ne $cargoVersion -or $tagVersion -ne $confVersion) {
+            throw "Tag v$tagVersion does not match clean-gui Cargo.toml ($cargoVersion) / tauri.conf.json ($confVersion). Bump the manifests before tagging."
+          }
+      - name: Tests
+        run: cargo test --workspace
+      - name: Release build (CLI + GUI)
+        run: cargo build --release -p clean-cli -p clean-gui
+      - name: Package and verify portable zip
+        shell: pwsh
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $zipName = "CleanMaster-v$tagVersion-windows-x64-portable.zip"
+          New-Item -ItemType Directory stage | Out-Null
+          Copy-Item target/release/clean-master.exe, target/release/clean.exe stage/
+          Compress-Archive -Path stage/* -DestinationPath $zipName
+          # Verify the zip ITSELF contains the binaries - never trust it by
+          # construction. Entry separators are normalized because
+          # Compress-Archive may emit backslashes on Windows.
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipArchive = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipName))
+          try {
+            foreach ($required in 'clean-master.exe', 'clean.exe') {
+              $entry = $zipArchive.Entries | Where-Object { ($_.FullName -replace '\\', '/') -eq $required }
+              if (-not $entry) { throw "$zipName is missing $required" }
+              if ($entry.Length -lt 1MB) { throw "$required in $zipName is suspiciously small ($($entry.Length) bytes)" }
+            }
+          } finally { $zipArchive.Dispose() }
+          $hashValue = (Get-FileHash $zipName -Algorithm SHA256).Hash.ToLower()
+          "$hashValue  $zipName" | Out-File -Encoding ascii "$zipName.sha256"
+          Write-Host "OK: $zipName ($((Get-Item $zipName).Length) bytes) sha256=$hashValue"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: |
+            CleanMaster-v*-windows-x64-portable.zip
+            CleanMaster-v*-windows-x64-portable.zip.sha256
+
+  build-macos:
+    name: build macos app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify tag matches the app version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/clean-gui/Cargo.toml | head -n1)
+          CONF_VERSION=$(python3 -c "import json; print(json.load(open('crates/clean-gui/tauri.conf.json'))['version'])")
+          echo "tag=$TAG_VERSION cargo=$CARGO_VERSION tauri.conf=$CONF_VERSION"
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ] || [ "$TAG_VERSION" != "$CONF_VERSION" ]; then
+            echo "Tag v$TAG_VERSION does not match clean-gui manifests ($CARGO_VERSION / $CONF_VERSION). Bump the manifests before tagging."
+            exit 1
+          fi
+      - name: Tests
+        run: cargo test --workspace
+      - name: Bundle Clean Master.app
+        run: |
+          npm install -g @tauri-apps/cli@^2
+          cd crates/clean-gui
+          tauri build
+      - name: Package and verify app zip
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          ZIP_NAME="CleanMaster-v$TAG_VERSION-macos-arm64.zip"
+          ditto -c -k --keepParent "target/release/bundle/macos/Clean Master.app" "$ZIP_NAME"
+          # Verify the zip carries the real bundle executable, not just scaffolding.
+          unzip -l "$ZIP_NAME" | grep -q "Clean Master.app/Contents/MacOS/clean-master" || { echo "$ZIP_NAME is missing the bundle executable"; exit 1; }
+          shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256"
+          ls -l "$ZIP_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: |
+            CleanMaster-v*-macos-arm64.zip
+            CleanMaster-v*-macos-arm64.zip.sha256
+
+  release:
+    name: publish github release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Sanity-check assets
+        run: |
+          ls -l
+          for f in CleanMaster-v*-windows-x64-portable.zip CleanMaster-v*-macos-arm64.zip; do
+            [ -s "$f" ] || { echo "missing or empty: $f"; exit 1; }
+            head -c 4 "$f" | od -An -tx1 | grep -qi "50 4b 03 04" || { echo "$f is not a zip"; exit 1; }
+          done
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          Portable builds - unzip and run, nothing is installed.
+
+          - **Windows (x64)**: `clean-master.exe` (Clean Master GUI) + `clean.exe` (CLI). Needs the WebView2 runtime (preinstalled on Windows 10/11).
+          - **macOS (Apple Silicon)**: `Clean Master.app`, unsigned - right-click > Open once, or run `xattr -cr "Clean Master.app"` after unzipping.
+
+          `.sha256` files contain the checksum of each zip.
+          EOF
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Clean Master $GITHUB_REF_NAME" \
+            --notes-file notes.md \
+            CleanMaster-v*.zip CleanMaster-v*.zip.sha256
