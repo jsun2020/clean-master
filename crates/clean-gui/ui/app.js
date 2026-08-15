@@ -59,6 +59,7 @@ function setLang(next) {
   if (lastAnalyze) renderAnalyze(lastAnalyze);
   if (devReport) renderDev();
   if (appsReport) renderApps();
+  if (tbReport) renderToolbox();
   refreshUndo();
 }
 
@@ -168,12 +169,14 @@ let filesTab = "junk";
 
 function showView(v) {
   $("files-tabs").hidden = v !== "files";
-  ["junk", "dupes", "analyze", "dev", "apps"].forEach((s) => {
+  ["junk", "dupes", "analyze", "dev", "apps", "toolbox"].forEach((s) => {
     $("view-" + s).hidden = v === "files" ? s !== filesTab : s !== v;
   });
   // The app list is cheap to build (registry / bundle listing): scan lazily
   // the first time the screen is opened.
   if (v === "apps" && !appsReport && !appsScanning) appsScan();
+  // Toolbox: catalog + size probes, first time only (Rescan re-probes).
+  if (v === "toolbox" && !tbReport && !tbLoading) toolboxLoad();
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -964,6 +967,232 @@ async function uninstallApp(index) {
     }
   } catch (err) {
     toast(String(err), true);
+  }
+}
+
+// ------------------------------------------------------------ toolbox --
+/* Curated maintenance tools. The webview only ever sends a tool id + a mode
+   ("check" | "action" | "open") and, for the winget search card, the typed
+   term; the Rust side re-derives every command line from its catalog. */
+
+let tbReport = null;
+let tbLoading = false;
+let tbCat = "storage";
+let tbRunningId = null;
+const tbInputs = {};   // tool id -> last typed term (survives re-render)
+const TB_MAX_LINES = 2000;
+
+/* Tool text: translated by tool id when the dictionary has it, else the
+   backend's English. */
+function trTool(id, field, fallback) {
+  const d = dict().tools && dict().tools[id];
+  return (d && d[field]) || fallback;
+}
+function trReason(id) {
+  return (dict().tb_reasons && dict().tb_reasons[id]) || (window.CM_I18N.en.tb_reasons[id]) || id;
+}
+
+async function toolboxLoad() {
+  tbLoading = true;
+  $("btn-tb-refresh").disabled = true;
+  try {
+    tbReport = await invoke("toolbox_list");
+    renderToolbox();
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    tbLoading = false;
+    $("btn-tb-refresh").disabled = false;
+  }
+}
+
+function renderToolbox() {
+  const rep = tbReport;
+  if (!rep.supported) {
+    $("tb-admin").hidden = true;
+    $("tb-chips").hidden = true;
+    $("tb-list").innerHTML = '<div class="hint">' + t("tb_windows_only") + '</div>';
+    return;
+  }
+  $("tb-admin").hidden = rep.elevated;
+  $("tb-chips").hidden = false;
+  document.querySelectorAll("#tb-chips .chip").forEach((c) => {
+    c.classList.toggle("active", c.dataset.cat === tbCat);
+  });
+
+  const shown = rep.tools.filter((x) => x.category === tbCat);
+  if (!shown.length) {
+    $("tb-list").innerHTML = '<div class="hint">' + t("tb_cat_empty") + '</div>';
+    return;
+  }
+  let html = '<div class="card">';
+  for (const x of shown) {
+    const admin = x.needs_admin && !rep.elevated;
+    const busy = tbRunningId !== null;
+    const off = admin || Boolean(x.unavailable);
+    const tags = [];
+    if (x.needs_admin) tags.push('<span class="tag-flag' + (admin ? " warn" : "") + '">' + t("tb_tag_admin") + "</span>");
+    if (x.reboot) tags.push('<span class="tag-flag warn">' + t("tb_tag_reboot") + "</span>");
+    if (x.long_running) tags.push('<span class="tag-flag">' + t("tb_tag_long") + "</span>");
+    const size = x.probe_bytes !== null && x.probe_bytes !== undefined
+      ? '<div class="rule-bytes">' + esc(fmtBytes(x.probe_bytes)) + "</div>"
+      : '<div class="rule-bytes tb-nosize">-</div>';
+    const note = x.unavailable
+      ? '<div class="rule-note tb-unavail">' + esc(trReason(x.unavailable)) + "</div>"
+      : "";
+    const cmdLine = x.check_cmd || x.action_cmd
+      ? '<div class="rule-base" title="' + esc(x.action_cmd || x.check_cmd) + '">' +
+        esc((x.check_cmd || x.action_cmd).split("\n")[0]) + "</div>"
+      : "";
+    const input = x.takes_input
+      ? '<div class="tb-input-row"><input class="tb-input" data-tb-input="' + x.id +
+        '" placeholder="' + esc(t("tb_winget_ph")) + '" value="' + esc(tbInputs[x.id] || "") +
+        '" ' + (off ? "disabled" : "") + "></div>"
+      : "";
+    const btns = [];
+    if (x.has_check) btns.push('<button class="btn ghost small" data-tb-run="' + x.id + '" data-tb-mode="check"' +
+      (off || busy ? " disabled" : "") + ">" + esc(trTool(x.id, "check", x.check_label)) + "</button>");
+    if (x.has_action) btns.push('<button class="btn primary small" data-tb-run="' + x.id + '" data-tb-mode="action"' +
+      (off || busy ? " disabled" : "") + ">" + esc(trTool(x.id, "action", x.action_label)) + "</button>");
+    if (x.has_open) btns.push('<button class="btn ghost small" data-tb-run="' + x.id + '" data-tb-mode="open"' +
+      (off ? " disabled" : "") + ">" + t("tb_open") + "</button>");
+    html += '<div class="app-row tb-row' + (off ? " tb-off" : "") + '">' +
+      '<div class="rule-detail"><div class="rule-name">' + esc(trTool(x.id, "name", x.name)) + tags.join("") + "</div>" +
+      '<div class="tb-blurb">' + esc(trTool(x.id, "blurb", x.blurb)) + "</div>" + cmdLine + note + input + "</div>" +
+      size + '<div class="tb-btns">' + btns.join("") + "</div></div>";
+  }
+  html += "</div>";
+  $("tb-list").innerHTML = html;
+
+  document.querySelectorAll("#tb-list [data-tb-run]").forEach((btn) => {
+    btn.addEventListener("click", () => toolboxRun(btn.dataset.tbRun, btn.dataset.tbMode));
+  });
+  document.querySelectorAll("#tb-list [data-tb-input]").forEach((inp) => {
+    inp.addEventListener("input", () => { tbInputs[inp.dataset.tbInput] = inp.value; });
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") toolboxRun(inp.dataset.tbInput, "check");
+    });
+  });
+}
+
+document.querySelectorAll("#tb-chips .chip").forEach((c) => {
+  c.addEventListener("click", () => {
+    tbCat = c.dataset.cat;
+    if (tbReport) renderToolbox();
+  });
+});
+
+$("btn-tb-refresh").addEventListener("click", toolboxLoad);
+
+$("btn-tb-elevate").addEventListener("click", async () => {
+  const ok = await confirmModal(t("tb_elevate_title"), t("tb_elevate_body"), t("tb_restart_admin"));
+  if (!ok) return;
+  try {
+    await invoke("toolbox_elevate");
+    // On success the app exits; nothing more to do here.
+  } catch (err) {
+    toast(String(err), true);
+  }
+});
+
+/* Console: DISM redraws a progress bar with \r - collapse consecutive
+   progress lines into one so the log stays readable. Strip VT escapes that
+   winget emits even when piped. */
+const TB_ANSI = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
+/* DISM "[=====  42.0%  =====]", winget spinner frames "- \ | /" and block
+   bars "████░░ 1.2 MB / 3.4 MB": only bar/spinner glyphs plus numbers. */
+const TB_PROGRESS = /^(?:[\s\-\\|\/=\[\]\u2588\u2593\u2592\u2591]|\d[\d.,]*\s*(?:%|[KMGT]?i?B)?)+$/;
+let tbLastWasProgress = false;
+
+function tbConsoleLine(line) {
+  const out = $("tb-console-out");
+  const clean = line.replace(TB_ANSI, "");
+  const trimmed = clean.trim();
+  const isProg = trimmed.length > 0 && TB_PROGRESS.test(trimmed);
+  if (isProg && tbLastWasProgress && out.lastChild) {
+    out.lastChild.textContent = clean + "\n";
+  } else {
+    const span = document.createElement("span");
+    span.textContent = clean + "\n";
+    if (clean.startsWith("> ")) span.className = "tb-cmd";
+    out.appendChild(span);
+    while (out.childNodes.length > TB_MAX_LINES) out.removeChild(out.firstChild);
+  }
+  tbLastWasProgress = isProg;
+  out.scrollTop = out.scrollHeight;
+}
+
+listen("tool-line", (e) => {
+  if (e.payload && typeof e.payload.line === "string") tbConsoleLine(e.payload.line);
+});
+
+$("btn-tb-clear").addEventListener("click", () => {
+  $("tb-console-out").textContent = "";
+  tbLastWasProgress = false;
+  if (tbRunningId === null) {
+    $("tb-console").hidden = true;
+    $("tb-console-status").textContent = "";
+  }
+});
+
+$("btn-tb-cancel").addEventListener("click", async () => {
+  try { await invoke("toolbox_cancel"); } catch (err) { toast(String(err), true); }
+});
+
+async function toolboxRun(id, mode) {
+  if (!tbReport) return;
+  const x = tbReport.tools.find((tt) => tt.id === id);
+  if (!x) return;
+  if (tbRunningId !== null && mode !== "open") { toast(t("tb_busy"), true); return; }
+  const name = trTool(id, "name", x.name);
+  let input = null;
+  if (x.takes_input) {
+    input = (tbInputs[id] || "").trim();
+    if (!input) { toast(t("tb_need_term"), true); return; }
+  }
+  if (mode === "action") {
+    let cmd = x.action_cmd;
+    if (x.takes_input) cmd = cmd.replace("<term>", input);
+    let body = tf("tb_confirm_body", { name, cmd });
+    if (x.reboot) body += "\n\n" + t("tb_confirm_reboot");
+    if (x.long_running) body += "\n\n" + t("tb_confirm_long");
+    const ok = await confirmModal(tf("tb_confirm_title", { name }), body,
+      trTool(id, "action", x.action_label));
+    if (!ok) return;
+  }
+  if (mode === "open") {
+    try { await invoke("toolbox_run", { id, mode, input: null }); }
+    catch (err) { toast(String(err), true); }
+    return;
+  }
+
+  tbRunningId = id;
+  renderToolbox();
+  $("tb-console").hidden = false;
+  $("tb-console").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  $("tb-console-title").textContent = name;
+  $("tb-console-status").textContent = t("tb_running");
+  $("tb-console-status").className = "tb-console-status run";
+  $("btn-tb-cancel").hidden = false;
+  tbLastWasProgress = false;
+  try {
+    const res = await invoke("toolbox_run", { id, mode, input });
+    const st = $("tb-console-status");
+    if (res.cancelled) { st.textContent = t("tb_cancelled"); st.className = "tb-console-status warn"; }
+    else if (res.success) { st.textContent = t("tb_done"); st.className = "tb-console-status ok"; }
+    else { st.textContent = tf("tb_failed", { code: res.exit_code === null ? "?" : res.exit_code }); st.className = "tb-console-status err"; }
+    if (res.success && mode === "action") toast(tf("tb_toast_done", { name }));
+  } catch (err) {
+    $("tb-console-status").textContent = t("tb_error");
+    $("tb-console-status").className = "tb-console-status err";
+    tbConsoleLine(String(err));
+    toast(String(err), true);
+  } finally {
+    tbRunningId = null;
+    $("btn-tb-cancel").hidden = true;
+    // Actions change what the probes measure (hiberfil gone, cache empty):
+    // reload the catalog so the sizes and availability are honest.
+    if (mode === "action") toolboxLoad(); else renderToolbox();
   }
 }
 
