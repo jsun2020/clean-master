@@ -11,6 +11,7 @@ pub mod rules;
 pub mod safety;
 pub mod scanner;
 pub mod session;
+pub mod toolbox;
 pub mod types;
 
 pub use error::CoreError;

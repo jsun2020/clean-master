@@ -13,6 +13,7 @@ globset.workspace = true
 blake3.workspace = true
 rayon = "1"
 trash = "5"
+encoding_rs = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"

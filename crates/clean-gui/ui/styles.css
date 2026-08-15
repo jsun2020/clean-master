@@ -442,3 +442,45 @@ button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(-
 }
 .tag-rec { background: rgba(16, 185, 129, 0.12); color: #047857; }
 .tag-active { background: rgba(217, 119, 6, 0.12); color: #b45309; }
+
+/* v0.7.0: Toolbox - tool cards, admin banner, streaming output console */
+.modal p { white-space: pre-line; }
+.tb-admin { align-items: center; justify-content: space-between; }
+.tb-admin .btn.small { flex: none; width: auto; }
+.tb-row { align-items: flex-start; }
+.tb-row.tb-off .rule-name, .tb-row.tb-off .tb-blurb { opacity: .55; }
+.tb-blurb { font-size: 12.5px; color: var(--ink-2); line-height: 1.5; margin-top: 3px; }
+.tb-unavail { color: var(--amber); }
+.tb-nosize { color: var(--ink-3); font-weight: 400; }
+.tb-btns { display: flex; gap: 6px; flex: none; align-items: center; padding-top: 2px; }
+.tb-btns .btn.small { width: auto; flex: none; white-space: nowrap; }
+.tb-input-row { margin-top: 8px; }
+.tb-input {
+  font: inherit; font-size: 12.5px; color: var(--ink);
+  width: 100%; max-width: 520px; padding: 6px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--paper);
+}
+.tb-input:focus { outline: 2px solid var(--emerald-hi); outline-offset: 1px; }
+.tb-console {
+  margin-top: 16px; background: var(--forest-9); color: #d7e6df;
+  border-radius: 12px; box-shadow: var(--shadow); overflow: hidden;
+  animation: rise .3s both;
+}
+.tb-console-head {
+  display: flex; align-items: center; gap: 12px; padding: 9px 14px;
+  background: var(--forest-8); font-size: 12.5px;
+}
+.tb-console-title { font-weight: 650; color: #fff; }
+.tb-console-status { flex: 1; font-family: var(--mono); font-size: 11.5px; color: #9fb8ad; }
+.tb-console-status.run { color: #ffd479; }
+.tb-console-status.ok { color: var(--emerald-hi); }
+.tb-console-status.warn { color: #ffd479; }
+.tb-console-status.err { color: #ff8b80; }
+.tb-console-head .btn.small { width: auto; flex: none; background: transparent; color: #d7e6df; border-color: rgba(255,255,255,.18); }
+.tb-console-head .btn.small:hover { background: rgba(255,255,255,.08); }
+.tb-console-out {
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  padding: 12px 14px; margin: 0; max-height: 320px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all; user-select: text;
+}
+.tb-console-out .tb-cmd { color: var(--emerald-hi); }

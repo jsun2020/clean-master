@@ -16,10 +16,12 @@ use clean_core::safety::{
     ActionManifest, Disposition,
 };
 use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
+use clean_core::toolbox::{self, Input, Mode, Tool};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 
@@ -37,6 +39,8 @@ struct AppState {
     /// Installed apps from the last app scan; the UI selects by index and the
     /// uninstall command / bundle path is re-derived here (never injected).
     apps: Mutex<Vec<InstalledApp>>,
+    /// Cancel flag of the toolbox tool currently running (one at a time).
+    tool_running: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 struct JunkRuleState {
@@ -899,6 +903,207 @@ async fn app_uninstall(state: State<'_, AppState>, index: usize) -> Result<AppRe
     }
 }
 
+// -------------------------------------------------------------- toolbox --
+
+#[derive(Serialize)]
+struct ToolDto {
+    id: String,
+    category: String,
+    name: String,
+    blurb: String,
+    needs_admin: bool,
+    reboot: bool,
+    long_running: bool,
+    has_check: bool,
+    has_action: bool,
+    has_open: bool,
+    takes_input: bool,
+    check_label: String,
+    action_label: String,
+    /// Literal command lines, for the card and the confirm dialog.
+    check_cmd: String,
+    action_cmd: String,
+    /// Size preview (hiberfil.sys, Windows.old, DO cache); None = no probe
+    /// or nothing there.
+    probe_bytes: Option<u64>,
+    /// Stable reason id when the tool cannot run right now.
+    unavailable: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ToolboxDto {
+    /// false on macOS: the catalog is Windows-only.
+    supported: bool,
+    elevated: bool,
+    tools: Vec<ToolDto>,
+}
+
+#[derive(Serialize)]
+struct ToolRunDto {
+    exit_code: Option<i32>,
+    success: bool,
+    cancelled: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct ToolLinePayload {
+    id: String,
+    line: String,
+}
+
+fn join_cmds(cmds: &[toolbox::Cmd]) -> String {
+    cmds.iter().map(|c| c.display()).collect::<Vec<_>>().join("\n")
+}
+
+#[tauri::command]
+async fn toolbox_list() -> Result<ToolboxDto, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let tools = toolbox::builtin_tools();
+        ToolboxDto {
+            supported: cfg!(target_os = "windows"),
+            elevated: toolbox::is_elevated(),
+            tools: tools
+                .iter()
+                .map(|t: &Tool| ToolDto {
+                    id: t.id.to_string(),
+                    category: t.category.id().to_string(),
+                    name: t.name.to_string(),
+                    blurb: t.blurb.to_string(),
+                    needs_admin: t.needs_admin,
+                    reboot: t.reboot,
+                    long_running: t.long_running,
+                    has_check: !t.check.is_empty(),
+                    has_action: !t.action.is_empty(),
+                    has_open: t.open.is_some(),
+                    takes_input: t.input == Input::WingetTerm,
+                    check_label: t.check_label.to_string(),
+                    action_label: t.action_label.to_string(),
+                    check_cmd: join_cmds(&t.check),
+                    action_cmd: join_cmds(&t.action),
+                    probe_bytes: toolbox::probe_bytes(&t.probe),
+                    unavailable: toolbox::unavailable_reason(t).map(str::to_string),
+                })
+                .collect(),
+        }
+    })
+    .await
+    .map_err(|e| format!("toolbox list failed: {e}"))
+}
+
+/// Run one tool. The webview sends an id + mode (+ a winget term); the
+/// command line is re-derived from the catalog here. Output lines stream as
+/// "tool-line" events; the result comes back when the tool finishes.
+#[tauri::command]
+async fn toolbox_run(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    mode: String,
+    input: Option<String>,
+) -> Result<ToolRunDto, String> {
+    let tool = toolbox::find_tool(&id).ok_or_else(|| format!("Unknown tool: {id}"))?;
+    let mode = Mode::parse(&mode).ok_or_else(|| format!("Unknown mode: {mode}"))?;
+    if tool.needs_admin && !toolbox::is_elevated() {
+        return Err(
+            "This tool needs administrator rights. Restart Clean Master as administrator first."
+                .into(),
+        );
+    }
+    if let Some(reason) = toolbox::unavailable_reason(&tool) {
+        return Err(format!("Tool is not available right now ({reason})."));
+    }
+    let steps: Vec<toolbox::Cmd> = match (mode, tool.input) {
+        (Mode::Open, _) => {
+            let cmd = tool.open.clone().ok_or("This tool has nothing to open.")?;
+            return tauri::async_runtime::spawn_blocking(move || {
+                toolbox::open_cmd(&cmd).map(|_| ToolRunDto {
+                    exit_code: Some(0),
+                    success: true,
+                    cancelled: false,
+                })
+            })
+            .await
+            .map_err(|e| format!("open failed: {e}"))?;
+        }
+        (m, Input::WingetTerm) => {
+            let term = toolbox::validate_winget_term(input.as_deref().unwrap_or(""))?;
+            toolbox::winget_cmds(m, &term)
+        }
+        (Mode::Check, Input::None) => tool.check.clone(),
+        (Mode::Action, Input::None) => tool.action.clone(),
+    };
+    if steps.is_empty() {
+        return Err("This tool has no such command.".into());
+    }
+
+    // One tool at a time: claim the slot before spawning.
+    let cancel = Arc::new(AtomicBool::new(false));
+    {
+        let mut slot = state.tool_running.lock().map_err(|_| "state lock poisoned")?;
+        if slot.is_some() {
+            return Err("Another tool is still running. Wait for it or cancel it first.".into());
+        }
+        *slot = Some(cancel.clone());
+    }
+
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        toolbox::run_steps(&steps, &cancel, |line| {
+            let _ = app2.emit(
+                "tool-line",
+                ToolLinePayload {
+                    id: id2.clone(),
+                    line: line.to_string(),
+                },
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("tool task failed: {e}"));
+
+    // Always free the slot, even when the tool errored.
+    if let Ok(mut slot) = state.tool_running.lock() {
+        *slot = None;
+    }
+    let outcome = result??;
+    Ok(ToolRunDto {
+        exit_code: outcome.exit_code,
+        success: outcome.success,
+        cancelled: outcome.cancelled,
+    })
+}
+
+#[tauri::command]
+async fn toolbox_cancel(state: State<'_, AppState>) -> Result<bool, String> {
+    let slot = state.tool_running.lock().map_err(|_| "state lock poisoned")?;
+    match slot.as_ref() {
+        Some(flag) => {
+            flag.store(true, Ordering::SeqCst);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Start an elevated instance through UAC and quit this one on success.
+#[tauri::command]
+async fn toolbox_elevate(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    if state
+        .tool_running
+        .lock()
+        .map_err(|_| "state lock poisoned")?
+        .is_some()
+    {
+        return Err("A tool is still running. Wait for it or cancel it first.".into());
+    }
+    tauri::async_runtime::spawn_blocking(toolbox::relaunch_elevated)
+        .await
+        .map_err(|e| format!("elevate task failed: {e}"))??;
+    app.exit(0);
+    Ok(())
+}
+
 #[tauri::command]
 async fn undo_status() -> Result<Option<UndoStatusDto>, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -1006,6 +1211,13 @@ async fn pick_folder() -> Result<Option<String>, String> {
 }
 
 fn main() {
+    // Elevated relaunch handshake: the previous (non-elevated) instance must
+    // be gone before this one creates its window, or WebView2 refuses to
+    // share the user-data folder across integrity levels.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pid) = toolbox::wait_for_pid_arg(&args) {
+        toolbox::wait_for_pid_exit(pid, 15_000);
+    }
     tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
@@ -1021,7 +1233,11 @@ fn main() {
             reveal_path,
             undo_status,
             undo_last,
-            pick_folder
+            pick_folder,
+            toolbox_list,
+            toolbox_run,
+            toolbox_cancel,
+            toolbox_elevate
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clean Master");

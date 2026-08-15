@@ -23,7 +23,7 @@ Portable builds are on the
 Each zip ships with a `.sha256` checksum file. Releases are published
 automatically by `.github/workflows/release.yml`: bump the version in
 `crates/clean-gui/Cargo.toml` + `tauri.conf.json`, then push a matching
-tag (`git tag v0.6.9 && git push origin v0.6.9`) - the workflow refuses
+tag (`git tag v0.7.0 && git push origin v0.7.0`) - the workflow refuses
 mismatched tags.
 
 ## Clean Master (GUI)
@@ -32,7 +32,7 @@ mismatched tags.
 cargo build --release -p clean-gui   # target/release/clean-master.exe
 ```
 
-Four screens, same safety contract as the CLI:
+Five screens, same safety contract as the CLI:
 
 - **Disk Files** - one screen with two tabs:
   - *Junk Clean* - scans the built-in rule pack on launch (dry run), shows
@@ -51,6 +51,17 @@ Four screens, same safety contract as the CLI:
   uninstaller on Windows (exactly like Settings > Apps - Clean Master never
   deletes inside Program Files), or moves the .app bundle to the Trash on
   macOS (undo-able).
+- **Toolbox** (Windows) - curated maintenance tools, winutil-inspired,
+  grouped as Storage / Windows Update / Software / Repair: hibernation file,
+  Windows.old, Delivery Optimization cache, component store (WinSxS)
+  analyze + cleanup, winget upgrades and search/install, `sfc`, DISM
+  health, DNS flush, network reset, plus shortcuts to Disk Cleanup and the
+  Storage / Windows Update settings pages. Every card shows the exact
+  command it runs (argument vectors, no shell); *checks* are read-only,
+  *actions* ask first with that command in the dialog, and output streams
+  into an in-app console with Cancel. Admin-only tools stay disabled until
+  you click **Restart as administrator** (normal UAC prompt) - Clean Master
+  itself never elevates silently.
 - **Undo** - every clean writes a manifest to `%LOCALAPPDATA%\CleanMaster`;
   the sidebar restores the last clean from the Recycle Bin in one click.
 

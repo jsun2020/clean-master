@@ -39,6 +39,10 @@
         <svg viewBox="0 0 20 20"><rect x="3" y="3" width="6" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="11" y="3" width="6" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="11" width="6" height="6" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M14 11.5v5M11.5 14h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         <span data-i18n="nav_apps">App Manager</span>
       </button>
+      <button class="nav-item" data-view="toolbox">
+        <svg viewBox="0 0 20 20"><path d="M3 8h14v8a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 16V8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M7 8V5.5A1.5 1.5 0 0 1 8.5 4h3A1.5 1.5 0 0 1 13 5.5V8M3 11.5h14M8.5 10.5v2M11.5 10.5v2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <span data-i18n="nav_toolbox">Toolbox</span>
+      </button>
     </nav>
 
     <div class="side-foot">
@@ -205,6 +209,43 @@
       </div>
 
       <div class="cards" id="apps-list"></div>
+    </section>
+
+    <!-- TOOLBOX -------------------------------------------------------- -->
+    <section class="view" id="view-toolbox" hidden>
+      <header class="head">
+        <div>
+          <h1 class="hero-num" data-i18n="tb_title">Toolbox</h1>
+          <p class="hero-sub" data-i18n="tb_sub">Curated Windows maintenance tools: component-store cleanup, update caches, app upgrades, system repair. Every card shows the exact command it runs; checks are read-only, actions ask first.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="btn-tb-refresh" data-i18n="rescan">Rescan</button>
+        </div>
+      </header>
+
+      <div class="banner tb-admin" id="tb-admin" hidden>
+        <span id="tb-admin-text" data-i18n="tb_admin_banner">Not running as administrator - tools marked ADMIN are disabled.</span>
+        <button class="btn small primary" id="btn-tb-elevate" data-i18n="tb_restart_admin">Restart as administrator</button>
+      </div>
+
+      <div class="chips" id="tb-chips" hidden>
+        <button class="chip active" data-cat="storage" data-i18n="tb_cat_storage">Storage</button>
+        <button class="chip" data-cat="updates" data-i18n="tb_cat_updates">Windows Update</button>
+        <button class="chip" data-cat="software" data-i18n="tb_cat_software">Software</button>
+        <button class="chip" data-cat="repair" data-i18n="tb_cat_repair">Repair</button>
+      </div>
+
+      <div class="cards" id="tb-list"></div>
+
+      <div class="tb-console" id="tb-console" hidden>
+        <div class="tb-console-head">
+          <span class="tb-console-title" id="tb-console-title"></span>
+          <span class="tb-console-status" id="tb-console-status"></span>
+          <button class="btn small ghost" id="btn-tb-cancel" data-i18n="tb_cancel" hidden>Cancel</button>
+          <button class="btn small ghost" id="btn-tb-clear" data-i18n="tb_clear">Clear</button>
+        </div>
+        <pre class="tb-console-out" id="tb-console-out"></pre>
+      </div>
     </section>
 
   </main>
