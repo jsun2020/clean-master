@@ -261,7 +261,9 @@ pub fn builtin_tools() -> Vec<Tool> {
         ),
     ];
     t.action_label = "Remove Windows.old";
-    t.probe = Probe::Dirs(vec![PathBuf::from(expand_env("%SystemDrive%\\Windows.old"))]);
+    t.probe = Probe::Dirs(vec![PathBuf::from(expand_env(
+        "%SystemDrive%\\Windows.old",
+    ))]);
     tools.push(t);
 
     let mut t = Tool::base(
@@ -273,7 +275,12 @@ pub fn builtin_tools() -> Vec<Tool> {
     t.needs_admin = true;
     t.action = vec![Cmd::new(
         "powershell",
-        &["-NoProfile", "-NonInteractive", "-Command", "Delete-DeliveryOptimizationCache -Force"],
+        &[
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Delete-DeliveryOptimizationCache -Force",
+        ],
     )];
     t.action_label = "Clear cache";
     t.probe = Probe::Dirs(vec![
@@ -311,9 +318,15 @@ pub fn builtin_tools() -> Vec<Tool> {
     );
     t.needs_admin = true;
     t.long_running = true;
-    t.check = vec![Cmd::new("Dism", &["/Online", "/Cleanup-Image", "/AnalyzeComponentStore"])];
+    t.check = vec![Cmd::new(
+        "Dism",
+        &["/Online", "/Cleanup-Image", "/AnalyzeComponentStore"],
+    )];
     t.check_label = "Analyze";
-    t.action = vec![Cmd::new("Dism", &["/Online", "/Cleanup-Image", "/StartComponentCleanup"])];
+    t.action = vec![Cmd::new(
+        "Dism",
+        &["/Online", "/Cleanup-Image", "/StartComponentCleanup"],
+    )];
     t.action_label = "Clean up";
     tools.push(t);
 
@@ -336,7 +349,12 @@ pub fn builtin_tools() -> Vec<Tool> {
     t.long_running = true;
     t.check = vec![Cmd::new(
         &winget,
-        &["upgrade", "--include-unknown", "--disable-interactivity", "--accept-source-agreements"],
+        &[
+            "upgrade",
+            "--include-unknown",
+            "--disable-interactivity",
+            "--accept-source-agreements",
+        ],
     )];
     t.check_label = "List upgrades";
     t.action = vec![Cmd::new(
@@ -393,9 +411,15 @@ pub fn builtin_tools() -> Vec<Tool> {
     );
     t.needs_admin = true;
     t.long_running = true;
-    t.check = vec![Cmd::new("Dism", &["/Online", "/Cleanup-Image", "/CheckHealth"])];
+    t.check = vec![Cmd::new(
+        "Dism",
+        &["/Online", "/Cleanup-Image", "/CheckHealth"],
+    )];
     t.check_label = "Check health";
-    t.action = vec![Cmd::new("Dism", &["/Online", "/Cleanup-Image", "/RestoreHealth"])];
+    t.action = vec![Cmd::new(
+        "Dism",
+        &["/Online", "/Cleanup-Image", "/RestoreHealth"],
+    )];
     t.action_label = "Restore health";
     tools.push(t);
 
@@ -476,7 +500,13 @@ pub fn winget_cmds(mode: Mode, term: &str) -> Vec<Cmd> {
     match mode {
         Mode::Check => vec![Cmd::new(
             &winget,
-            &["search", "--query", term, "--disable-interactivity", "--accept-source-agreements"],
+            &[
+                "search",
+                "--query",
+                term,
+                "--disable-interactivity",
+                "--accept-source-agreements",
+            ],
         )],
         Mode::Action => vec![Cmd::new(
             &winget,
@@ -583,9 +613,14 @@ fn configure(cmd: &mut Command) {
 /// Launch-and-forget (Settings pages, Disk Cleanup). Returns once spawned.
 pub fn open_cmd(cmd: &Cmd) -> Result<(), String> {
     let mut c = Command::new(&cmd.program);
-    c.args(&cmd.args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.args(&cmd.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     configure(&mut c);
-    c.spawn().map(|_| ()).map_err(|e| format!("could not start {}: {e}", cmd.program))
+    c.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start {}: {e}", cmd.program))
 }
 
 /// Run `steps` in order, streaming every output line to `on_line`
@@ -1014,7 +1049,10 @@ mod tests {
     fn expand_env_replaces_known_and_keeps_unknown() {
         std::env::set_var("CM_TB_TEST_VAR", "abc");
         assert_eq!(expand_env("x%CM_TB_TEST_VAR%y"), "xabcy");
-        assert_eq!(expand_env("%CM_TB_NO_SUCH_VAR_XYZ%\\p"), "%CM_TB_NO_SUCH_VAR_XYZ%\\p");
+        assert_eq!(
+            expand_env("%CM_TB_NO_SUCH_VAR_XYZ%\\p"),
+            "%CM_TB_NO_SUCH_VAR_XYZ%\\p"
+        );
         assert_eq!(expand_env("100% sure"), "100% sure");
         assert_eq!(expand_env("%%"), "%%");
     }
@@ -1039,7 +1077,11 @@ mod tests {
         let mut ids = HashSet::new();
         for t in &tools {
             assert!(ids.insert(t.id), "duplicate tool id {}", t.id);
-            assert!(!t.name.is_empty() && !t.blurb.is_empty(), "{}: empty text", t.id);
+            assert!(
+                !t.name.is_empty() && !t.blurb.is_empty(),
+                "{}: empty text",
+                t.id
+            );
             assert!(
                 !t.check.is_empty() || !t.action.is_empty() || t.open.is_some(),
                 "{}: no check, action or open",
@@ -1049,7 +1091,8 @@ mod tests {
                 assert!(!c.program.is_empty(), "{}: empty program", t.id);
                 // No shell wrappers: every step is a real executable + argv.
                 assert!(
-                    !c.program.eq_ignore_ascii_case("cmd") && !c.program.eq_ignore_ascii_case("cmd.exe"),
+                    !c.program.eq_ignore_ascii_case("cmd")
+                        && !c.program.eq_ignore_ascii_case("cmd.exe"),
                     "{}: uses cmd shell",
                     t.id
                 );
@@ -1058,23 +1101,47 @@ mod tests {
                 }
             }
             if t.input == Input::WingetTerm {
-                assert!(!t.check.is_empty() && !t.action.is_empty(), "{}: input tool needs both modes", t.id);
+                assert!(
+                    !t.check.is_empty() && !t.action.is_empty(),
+                    "{}: input tool needs both modes",
+                    t.id
+                );
             }
         }
         // System-changing tools must be flagged admin so the UI gates them.
-        for id in ["winsxs", "sfc", "dism_health", "winsock", "hiberfil", "windows_old", "do_cache"] {
+        for id in [
+            "winsxs",
+            "sfc",
+            "dism_health",
+            "winsock",
+            "hiberfil",
+            "windows_old",
+            "do_cache",
+        ] {
             let t = tools.iter().find(|t| t.id == id).expect(id);
             assert!(t.needs_admin, "{id} must need admin");
         }
         assert!(tools.iter().find(|t| t.id == "winsock").unwrap().reboot);
-        assert!(!tools.iter().find(|t| t.id == "flush_dns").unwrap().needs_admin);
+        assert!(
+            !tools
+                .iter()
+                .find(|t| t.id == "flush_dns")
+                .unwrap()
+                .needs_admin
+        );
         assert!(find_tool("no_such_tool").is_none());
     }
 
     #[test]
     fn winget_term_validation() {
-        assert_eq!(validate_winget_term("  Mozilla.Firefox ").unwrap(), "Mozilla.Firefox");
-        assert_eq!(validate_winget_term("visual studio code").unwrap(), "visual studio code");
+        assert_eq!(
+            validate_winget_term("  Mozilla.Firefox ").unwrap(),
+            "Mozilla.Firefox"
+        );
+        assert_eq!(
+            validate_winget_term("visual studio code").unwrap(),
+            "visual studio code"
+        );
         assert!(validate_winget_term("").is_err());
         assert!(validate_winget_term("   ").is_err());
         assert!(validate_winget_term("--uninstall").is_err());
@@ -1104,9 +1171,15 @@ mod tests {
             .collect();
         assert_eq!(sniff_encoding(&ascii16), TextEnc::Utf16Le);
         assert_eq!(sniff_encoding(&[0xFF, 0xFE, b'a', 0]), TextEnc::Utf16Le);
-        assert_eq!(sniff_encoding(b"Deployment Image Servicing\r\n"), TextEnc::EightBit);
+        assert_eq!(
+            sniff_encoding(b"Deployment Image Servicing\r\n"),
+            TextEnc::EightBit
+        );
         // GBK bytes (Chinese DISM banner) are 8-bit, not UTF-16.
-        assert_eq!(sniff_encoding(&[0xB2, 0xBF, 0xCA, 0xF0, 0xB3, 0xCC, 0xD0, 0xF2]), TextEnc::EightBit);
+        assert_eq!(
+            sniff_encoding(&[0xB2, 0xBF, 0xCA, 0xF0, 0xB3, 0xCC, 0xD0, 0xF2]),
+            TextEnc::EightBit
+        );
         assert_eq!(sniff_encoding(b"ok"), TextEnc::EightBit);
     }
 
@@ -1134,12 +1207,19 @@ mod tests {
     #[test]
     fn drain_lines_utf16_decodes_and_drops_bom() {
         let mut buf: Vec<u8> = vec![0xFF, 0xFE];
-        buf.extend("Verification 100% complete.\r\nWindows Resource Protection\r\n".encode_utf16().flat_map(|u| u.to_le_bytes()));
+        buf.extend(
+            "Verification 100% complete.\r\nWindows Resource Protection\r\n"
+                .encode_utf16()
+                .flat_map(|u| u.to_le_bytes()),
+        );
         buf.push(b'W'); // dangling half unit
         let lines = drain_lines(&mut buf, TextEnc::Utf16Le, false);
         assert_eq!(
             lines,
-            vec!["Verification 100% complete.".to_string(), "Windows Resource Protection".to_string()]
+            vec![
+                "Verification 100% complete.".to_string(),
+                "Windows Resource Protection".to_string()
+            ]
         );
         assert_eq!(buf, vec![b'W']);
     }
@@ -1180,7 +1260,10 @@ mod tests {
         assert!(out.success, "{out:?} {lines:?}");
         assert_eq!(out.exit_code, Some(0));
         assert_eq!(out.steps_run, 2);
-        assert!(lines.iter().any(|l| l.starts_with("> ")), "command echo line missing: {lines:?}");
+        assert!(
+            lines.iter().any(|l| l.starts_with("> ")),
+            "command echo line missing: {lines:?}"
+        );
         assert!(lines.iter().any(|l| l.trim() == "alpha"), "{lines:?}");
         assert!(lines.iter().any(|l| l.trim() == "beta"), "{lines:?}");
     }
@@ -1224,7 +1307,11 @@ mod tests {
         assert!(out.cancelled, "{out:?}");
         assert!(!out.success);
         assert_eq!(out.steps_run, 1);
-        assert!(started.elapsed() < Duration::from_secs(5), "cancel took {:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "cancel took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -1237,9 +1324,15 @@ mod tests {
         std::fs::write(sub.join("b.bin"), vec![1u8; 100]).unwrap();
         assert_eq!(probe_bytes(&Probe::File(f.clone())), Some(1234));
         assert_eq!(probe_bytes(&Probe::File(dir.path().join("missing"))), None);
-        assert_eq!(probe_bytes(&Probe::Dirs(vec![dir.path().to_path_buf()])), Some(1334));
         assert_eq!(
-            probe_bytes(&Probe::Dirs(vec![dir.path().join("nope"), dir.path().join("nope2")])),
+            probe_bytes(&Probe::Dirs(vec![dir.path().to_path_buf()])),
+            Some(1334)
+        );
+        assert_eq!(
+            probe_bytes(&Probe::Dirs(vec![
+                dir.path().join("nope"),
+                dir.path().join("nope2")
+            ])),
             None
         );
         assert_eq!(probe_bytes(&Probe::None), None);
@@ -1248,10 +1341,19 @@ mod tests {
     #[test]
     fn wait_for_pid_arg_parses_only_the_flag_form() {
         let a = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(wait_for_pid_arg(&a(&["clean-master.exe", "--wait-for-pid", "4242"])), Some(4242));
+        assert_eq!(
+            wait_for_pid_arg(&a(&["clean-master.exe", "--wait-for-pid", "4242"])),
+            Some(4242)
+        );
         assert_eq!(wait_for_pid_arg(&a(&["clean-master.exe"])), None);
-        assert_eq!(wait_for_pid_arg(&a(&["clean-master.exe", "--wait-for-pid"])), None);
-        assert_eq!(wait_for_pid_arg(&a(&["clean-master.exe", "--wait-for-pid", "abc"])), None);
+        assert_eq!(
+            wait_for_pid_arg(&a(&["clean-master.exe", "--wait-for-pid"])),
+            None
+        );
+        assert_eq!(
+            wait_for_pid_arg(&a(&["clean-master.exe", "--wait-for-pid", "abc"])),
+            None
+        );
     }
 
     #[test]
@@ -1259,13 +1361,20 @@ mod tests {
         // A child that lives ~1s: wait must return true after it exits, and
         // a very short timeout on a still-running child must return false.
         let mut child = if cfg!(windows) {
-            Command::new("ping").args(["-n", "3", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap()
+            Command::new("ping")
+                .args(["-n", "3", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap()
         } else {
             Command::new("sleep").arg("2").spawn().unwrap()
         };
         let pid = child.id();
         if cfg!(windows) {
-            assert!(!wait_for_pid_exit(pid, 50), "child cannot be gone after 50ms");
+            assert!(
+                !wait_for_pid_exit(pid, 50),
+                "child cannot be gone after 50ms"
+            );
         }
         assert!(wait_for_pid_exit(pid, 15_000));
         let _ = child.wait();

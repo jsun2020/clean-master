@@ -952,7 +952,10 @@ struct ToolLinePayload {
 }
 
 fn join_cmds(cmds: &[toolbox::Cmd]) -> String {
-    cmds.iter().map(|c| c.display()).collect::<Vec<_>>().join("\n")
+    cmds.iter()
+        .map(|c| c.display())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[tauri::command]
@@ -1039,7 +1042,10 @@ async fn toolbox_run(
     // One tool at a time: claim the slot before spawning.
     let cancel = Arc::new(AtomicBool::new(false));
     {
-        let mut slot = state.tool_running.lock().map_err(|_| "state lock poisoned")?;
+        let mut slot = state
+            .tool_running
+            .lock()
+            .map_err(|_| "state lock poisoned")?;
         if slot.is_some() {
             return Err("Another tool is still running. Wait for it or cancel it first.".into());
         }
@@ -1076,7 +1082,10 @@ async fn toolbox_run(
 
 #[tauri::command]
 async fn toolbox_cancel(state: State<'_, AppState>) -> Result<bool, String> {
-    let slot = state.tool_running.lock().map_err(|_| "state lock poisoned")?;
+    let slot = state
+        .tool_running
+        .lock()
+        .map_err(|_| "state lock poisoned")?;
     match slot.as_ref() {
         Some(flag) => {
             flag.store(true, Ordering::SeqCst);
