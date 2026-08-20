@@ -202,6 +202,8 @@ body {
   color: var(--ink-3); border: 1.4px solid var(--line); background: var(--surface-2, #f3f4f6);
   border-radius: 20px; padding: 1px 7px; margin-left: 6px; white-space: nowrap;
 }
+.tag-optin.warn { color: var(--amber); border-color: #e6c583; background: #fdf6e8; }
+.startup-row .btn.small:disabled { opacity: .5; cursor: not-allowed; }
 .rule-name { font-weight: 600; }
 .rule-detail { flex: 1; min-width: 0; }
 .rule-base { font-family: var(--mono); font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }

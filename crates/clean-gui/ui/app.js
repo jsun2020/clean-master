@@ -1262,16 +1262,22 @@ function renderStartup() {
   $("startup-summary").hidden = false;
   $("startup-summary").textContent =
     tf("startup_summary", { on: fmtCount(rep.enabled), n: fmtCount(rep.total) });
+  const anyAdmin = rep.entries.some((e) => e.requires_admin);
+  $("startup-admin").hidden = rep.elevated || !anyAdmin;
   if (!rep.entries.length) {
     $("startup-list").innerHTML = '<div class="hint">' + t("startup_none") + "</div>";
     return;
   }
   let html = "";
   for (const e of rep.entries) {
+    const blocked = e.requires_admin && !rep.elevated;
     const admin = e.requires_admin
-      ? ' <span class="tag-optin">' + t("st_admin") + "</span>"
+      ? ' <span class="tag-optin' + (blocked ? " warn" : "") + '">' + t("st_admin") + "</span>"
       : "";
-    const btn = e.enabled
+    const label = e.enabled ? t("st_disable") : t("st_enable");
+    const btn = blocked
+      ? '<button class="btn small ghost" disabled title="' + esc(t("st_needs_admin")) + '">' + label + "</button>"
+      : e.enabled
       ? '<button class="btn small ghost" data-toggle="' + e.index + '" data-enable="0">' + t("st_disable") + "</button>"
       : '<button class="btn small primary" data-toggle="' + e.index + '" data-enable="1">' + t("st_enable") + "</button>";
     html +=
@@ -1300,6 +1306,17 @@ async function startupToggle(index, enable) {
 }
 
 $("btn-startup-rescan").addEventListener("click", () => startupScan());
+
+$("btn-startup-elevate").addEventListener("click", async () => {
+  const ok = await confirmModal(t("tb_elevate_title"), t("tb_elevate_body"), t("tb_restart_admin"));
+  if (!ok) return;
+  try {
+    await invoke("toolbox_elevate");
+    // On success the app exits and relaunches elevated; nothing more to do here.
+  } catch (err) {
+    toast(String(err), true);
+  }
+});
 
 // --------------------------------------------------------------- init --
 

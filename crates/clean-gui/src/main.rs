@@ -1231,6 +1231,10 @@ struct StartupEntryDto {
 struct StartupDto {
     total: usize,
     enabled: usize,
+    /// Whether THIS process is running elevated. Changing an HKLM / all-users
+    /// entry needs administrator rights; when false the UI offers a UAC
+    /// relaunch instead of attempting the write and surfacing a raw os error 5.
+    elevated: bool,
     entries: Vec<StartupEntryDto>,
 }
 
@@ -1238,6 +1242,7 @@ fn startup_dto(entries: &[StartupEntry]) -> StartupDto {
     StartupDto {
         total: entries.len(),
         enabled: entries.iter().filter(|e| e.enabled).count(),
+        elevated: toolbox::is_elevated(),
         entries: entries
             .iter()
             .enumerate()
@@ -1279,6 +1284,14 @@ async fn startup_toggle(
             .cloned()
             .ok_or("No such entry. Rescan first.")?
     };
+    if entry.requires_admin && !toolbox::is_elevated() {
+        // The frontend disables ADMIN rows while unelevated; this guards the
+        // command directly so a stale view can never trigger a raw os error 5.
+        return Err(format!(
+            "'{}' lives in {} and needs administrator rights. Restart Clean Master as administrator first.",
+            entry.name, entry.location_label
+        ));
+    }
     let refreshed = tauri::async_runtime::spawn_blocking(move || {
         startup::set_enabled(&entry, enable).map(|_| startup::list())
     })
