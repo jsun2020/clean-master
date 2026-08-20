@@ -169,7 +169,7 @@ let filesTab = "junk";
 
 function showView(v) {
   $("files-tabs").hidden = v !== "files";
-  ["junk", "dupes", "analyze", "dev", "apps", "toolbox"].forEach((s) => {
+  ["junk", "dupes", "analyze", "dev", "apps", "toolbox", "startup"].forEach((s) => {
     $("view-" + s).hidden = v === "files" ? s !== filesTab : s !== v;
   });
   // The app list is cheap to build (registry / bundle listing): scan lazily
@@ -177,6 +177,8 @@ function showView(v) {
   if (v === "apps" && !appsReport && !appsScanning) appsScan();
   // Toolbox: catalog + size probes, first time only (Rescan re-probes).
   if (v === "toolbox" && !tbReport && !tbLoading) toolboxLoad();
+  // Startup: enumerate autostart entries the first time the screen opens.
+  if (v === "startup" && !startupReport && !startupScanning) startupScan();
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -256,7 +258,10 @@ async function junkScan() {
     // Auto-select everything with content EXCEPT rules known to be blocked
     // by a running app (they cannot be recycled until it closes).
     junkReport.rules.forEach((r) => {
-      if (r.files > 0 && !junkBlockedRules.has(r.id)) junkSelected.add(r.id);
+      // Opt-in rules (privacy traces: recent files, browser history/cookies)
+      // are left unchecked - the user must tick them deliberately.
+      if (r.files > 0 && r.default_apply !== false && !junkBlockedRules.has(r.id))
+        junkSelected.add(r.id);
     });
     renderJunk();
   } catch (err) {
@@ -324,6 +329,7 @@ function renderJunk() {
         (disabled ? " disabled" : junkSelected.has(r.id) ? " checked" : "") + '><span class="box"></span></label>' +
         '<div class="rule-detail"><div class="rule-name">' + esc(trRule(r.id)) +
         (blocked ? ' <span class="tag-inuse">' + t("in_use") + '</span>' : "") +
+        (r.default_apply === false ? ' <span class="tag-optin">' + t("opt_in") + '</span>' : "") +
         (r.min_age_days > 0 ? ' <span class="rule-count">' + esc(tf("older_than", { n: r.min_age_days })) + '</span>' : "") +
         '</div><div class="rule-base">' + esc(r.base) + '</div>' +
         '<div class="meter"><i style="width:' + Math.max(1, Math.round((r.bytes / maxBytes) * 100)) + '%"></i></div></div>' +
@@ -1227,6 +1233,73 @@ $("btn-undo").addEventListener("click", async () => {
     toast(String(err), true);
   } finally { busyHide(); }
 });
+
+// --------------------------------------------------------------- startup
+
+let startupReport = null;
+let startupScanning = false;
+
+async function startupScan() {
+  startupScanning = true;
+  $("startup-progress").hidden = false;
+  $("startup-progress-label").textContent = t("startup_scanning");
+  $("btn-startup-rescan").disabled = true;
+  try {
+    startupReport = await invoke("startup_scan");
+    renderStartup();
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    startupScanning = false;
+    $("startup-progress").hidden = true;
+    $("btn-startup-rescan").disabled = false;
+  }
+}
+
+function renderStartup() {
+  const rep = startupReport;
+  if (!rep) return;
+  $("startup-summary").hidden = false;
+  $("startup-summary").textContent =
+    tf("startup_summary", { on: fmtCount(rep.enabled), n: fmtCount(rep.total) });
+  if (!rep.entries.length) {
+    $("startup-list").innerHTML = '<div class="hint">' + t("startup_none") + "</div>";
+    return;
+  }
+  let html = "";
+  for (const e of rep.entries) {
+    const admin = e.requires_admin
+      ? ' <span class="tag-optin">' + t("st_admin") + "</span>"
+      : "";
+    const btn = e.enabled
+      ? '<button class="btn small ghost" data-toggle="' + e.index + '" data-enable="0">' + t("st_disable") + "</button>"
+      : '<button class="btn small primary" data-toggle="' + e.index + '" data-enable="1">' + t("st_enable") + "</button>";
+    html +=
+      '<div class="card startup-row' + (e.enabled ? "" : " off") + '">' +
+      '<div class="rule-detail"><div class="rule-name">' + esc(e.name) + admin +
+      (e.enabled ? "" : ' <span class="tag-inuse">' + t("st_off") + "</span>") +
+      '</div><div class="rule-base">' + esc(e.location) + "  •  " + esc(e.command) + "</div></div>" +
+      btn +
+      "</div>";
+  }
+  $("startup-list").innerHTML = html;
+  document.querySelectorAll("#startup-list [data-toggle]").forEach((b) => {
+    b.addEventListener("click", () =>
+      startupToggle(Number(b.dataset.toggle), b.dataset.enable === "1"));
+  });
+}
+
+async function startupToggle(index, enable) {
+  try {
+    startupReport = await invoke("startup_toggle", { index, enable });
+    renderStartup();
+    toast(enable ? t("toast_startup_enabled") : t("toast_startup_disabled"));
+  } catch (err) {
+    toast(String(err), true);
+  }
+}
+
+$("btn-startup-rescan").addEventListener("click", () => startupScan());
 
 // --------------------------------------------------------------- init --
 

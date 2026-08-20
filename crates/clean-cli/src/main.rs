@@ -3,6 +3,7 @@ mod apply;
 mod dupes_cmd;
 mod fmt;
 mod junk;
+mod startup_cmd;
 
 use clap::{Parser, Subcommand};
 use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
@@ -58,6 +59,10 @@ enum Cmd {
         /// Skip the confirmation prompt (for scripting)
         #[arg(long, requires = "apply")]
         yes: bool,
+        /// Also include opt-in privacy-trace rules (recent files, browser
+        /// history/cookies). These are skipped by default.
+        #[arg(long)]
+        all: bool,
     },
     /// Find duplicate files under a path (dry run by default)
     Dupes {
@@ -90,6 +95,27 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RulesCmd,
     },
+    /// List and toggle programs that run at login (Windows)
+    Startup {
+        #[command(subcommand)]
+        cmd: StartupCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum StartupCmd {
+    /// List all autostart entries (Run keys + Startup folders)
+    List,
+    /// Disable an entry by name (reversible; the program is never deleted)
+    Disable {
+        /// Entry name from `clean startup list`
+        name: String,
+    },
+    /// Re-enable a previously disabled entry by name
+    Enable {
+        /// Entry name from `clean startup list`
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -107,7 +133,7 @@ fn main() -> ExitCode {
             output,
         } => cmd_scan(path, excludes, output),
         Cmd::Analyze { session, top, by } => cmd_analyze(session, top, by),
-        Cmd::Junk { apply, yes } => cmd_junk(apply, yes),
+        Cmd::Junk { apply, yes, all } => cmd_junk(apply, yes, all),
         Cmd::Dupes {
             path,
             min_size,
@@ -132,6 +158,11 @@ fn main() -> ExitCode {
             junk::list_rules();
             Ok(())
         }
+        Cmd::Startup { cmd } => match cmd {
+            StartupCmd::List => startup_cmd::list(),
+            StartupCmd::Disable { name } => startup_cmd::disable(&name),
+            StartupCmd::Enable { name } => startup_cmd::enable(&name),
+        },
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -181,8 +212,8 @@ fn cmd_scan(path: PathBuf, excludes: Vec<String>, output: Option<PathBuf>) -> Re
     Ok(())
 }
 
-fn cmd_junk(do_apply: bool, yes: bool) -> Result<(), String> {
-    let (targets, bases) = junk::report(!do_apply);
+fn cmd_junk(do_apply: bool, yes: bool, include_optional: bool) -> Result<(), String> {
+    let (targets, bases) = junk::report(!do_apply, include_optional);
     if !do_apply {
         return Ok(());
     }

@@ -16,7 +16,11 @@ pub fn collect_reports() -> Vec<RuleReport> {
 
 /// Report what would be (or is about to be) reclaimed, grouped by category.
 /// Returns the deletable targets and the rule bases they are authorized under.
-pub fn report(dry: bool) -> (Vec<(String, u64)>, Vec<std::path::PathBuf>) {
+///
+/// Opt-in rules (`default_apply == false`, e.g. browser history / cookies) are
+/// always shown so the user knows they exist, but their files are only
+/// returned as targets when `include_optional` is set (`clean junk --all`).
+pub fn report(dry: bool, include_optional: bool) -> (Vec<(String, u64)>, Vec<std::path::PathBuf>) {
     if dry {
         println!("Scanning junk locations (dry run - nothing will be deleted)...");
     } else {
@@ -26,26 +30,47 @@ pub fn report(dry: bool) -> (Vec<(String, u64)>, Vec<std::path::PathBuf>) {
 
     let mut t = Table::new();
     t.load_preset(UTF8_FULL_CONDENSED);
-    t.set_header(vec!["Category", "Rule", "Location", "Files", "Reclaimable"]);
+    t.set_header(vec![
+        "Category",
+        "Rule",
+        "Apply",
+        "Location",
+        "Files",
+        "Reclaimable",
+    ]);
 
     let mut total_files = 0usize;
     let mut total_bytes = 0u64;
+    let mut skipped_optional = 0usize;
     for r in &reports {
         if r.findings.is_empty() {
             continue;
         }
-        total_files += r.findings.len();
-        total_bytes += r.bytes;
+        let selected = r.rule.default_apply || include_optional;
+        let apply_cell = if r.rule.default_apply {
+            "default"
+        } else if include_optional {
+            "opt-in*"
+        } else {
+            "opt-in"
+        };
+        if selected {
+            total_files += r.findings.len();
+            total_bytes += r.bytes;
+        } else {
+            skipped_optional += r.findings.len();
+        }
         t.add_row(vec![
             Cell::new(r.rule.category.label()),
             Cell::new(&r.rule.id),
+            Cell::new(apply_cell),
             Cell::new(&r.base),
             Cell::new(r.findings.len()).set_alignment(CellAlignment::Right),
             Cell::new(human_bytes(r.bytes)).set_alignment(CellAlignment::Right),
         ]);
     }
 
-    if total_files == 0 {
+    if total_files == 0 && skipped_optional == 0 {
         println!("No junk found in the known-safe locations. Nice and tidy.");
         return (Vec::new(), Vec::new());
     }
@@ -56,17 +81,26 @@ pub fn report(dry: bool) -> (Vec<(String, u64)>, Vec<std::path::PathBuf>) {
         human_bytes(total_bytes),
         total_files
     );
+    if skipped_optional > 0 && !include_optional {
+        println!(
+            "Plus {skipped_optional} files in opt-in privacy-trace rules (not selected). \
+             Add --all to include them."
+        );
+    }
     if dry {
         println!("This was a DRY RUN. Nothing was deleted. Re-run with --apply to clean.");
         println!("Use `clean rules list` to see why each location is considered safe.");
     }
 
-    let bases: Vec<std::path::PathBuf> = reports
+    // Only the selected rules contribute targets and authorized bases.
+    let selected_reports = reports
         .iter()
+        .filter(|r| r.rule.default_apply || include_optional);
+    let bases: Vec<std::path::PathBuf> = selected_reports
+        .clone()
         .map(|r| std::path::PathBuf::from(&r.base))
         .collect();
-    let targets: Vec<(String, u64)> = reports
-        .iter()
+    let targets: Vec<(String, u64)> = selected_reports
         .flat_map(|r| r.findings.iter())
         .map(|f| (f.record.path.clone(), f.record.size))
         .collect();
@@ -80,21 +114,30 @@ pub fn list_rules() {
     t.set_header(vec![
         "Rule",
         "Category",
-        "Risk",
+        "Match",
+        "Apply",
         "Min age",
         "Location",
         "Why it is safe",
     ]);
     for rule in rules::builtin_rules() {
         let base = rules::expand_env(&rule.base).unwrap_or_else(|| rule.base.clone());
+        let apply = if rule.default_apply {
+            "default"
+        } else {
+            "opt-in"
+        };
         t.add_row(vec![
             Cell::new(&rule.id),
             Cell::new(rule.category.label()),
-            Cell::new(format!("{:?}", rule.risk)),
+            Cell::new(format!("{:?}", rule.predicate).to_lowercase()),
+            Cell::new(apply),
             Cell::new(format!("{}d", rule.min_age_days)),
             Cell::new(base),
             Cell::new(&rule.rationale),
         ]);
     }
     println!("{t}");
+    println!("Match: glob = by pattern; zerobyte/brokenshortcut/emptydir = predicate.");
+    println!("Apply: default rules run on `clean junk`; opt-in rules need `clean junk --all`.");
 }

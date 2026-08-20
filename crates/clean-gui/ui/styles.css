@@ -193,6 +193,15 @@ body {
   color: var(--amber); border: 1.4px solid #e6c583; background: #fdf6e8;
   border-radius: 20px; padding: 1px 7px; margin-left: 6px; white-space: nowrap;
 }
+.startup-row { display: flex; align-items: center; gap: 12px; }
+.startup-row .rule-detail { flex: 1; min-width: 0; }
+.startup-row.off .rule-name { color: var(--ink-3); }
+.startup-row .btn.small { flex: none; width: auto; white-space: nowrap; }
+.tag-optin {
+  font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--ink-3); border: 1.4px solid var(--line); background: var(--surface-2, #f3f4f6);
+  border-radius: 20px; padding: 1px 7px; margin-left: 6px; white-space: nowrap;
+}
 .rule-name { font-weight: 600; }
 .rule-detail { flex: 1; min-width: 0; }
 .rule-base { font-family: var(--mono); font-size: 11px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }

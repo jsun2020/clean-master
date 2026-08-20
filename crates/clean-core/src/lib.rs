@@ -11,6 +11,8 @@ pub mod rules;
 pub mod safety;
 pub mod scanner;
 pub mod session;
+pub mod shortcut;
+pub mod startup;
 pub mod toolbox;
 pub mod types;
 

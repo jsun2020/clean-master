@@ -16,6 +16,7 @@ use clean_core::safety::{
     ActionManifest, Disposition,
 };
 use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
+use clean_core::startup::{self, StartupEntry};
 use clean_core::toolbox::{self, Input, Mode, Tool};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -39,6 +40,9 @@ struct AppState {
     /// Installed apps from the last app scan; the UI selects by index and the
     /// uninstall command / bundle path is re-derived here (never injected).
     apps: Mutex<Vec<InstalledApp>>,
+    /// Autostart entries from the last startup scan; the UI toggles by index
+    /// and the target entry is re-derived here (never injected).
+    startup: Mutex<Vec<StartupEntry>>,
     /// Cancel flag of the toolbox tool currently running (one at a time).
     tool_running: Mutex<Option<Arc<AtomicBool>>>,
 }
@@ -94,6 +98,9 @@ struct JunkRuleDto {
     min_age_days: u32,
     files: usize,
     bytes: u64,
+    /// Applied by default (true) vs opt-in only (false, e.g. privacy traces).
+    /// The UI leaves opt-in rules unchecked after a scan.
+    default_apply: bool,
 }
 
 #[derive(Serialize)]
@@ -242,6 +249,7 @@ async fn junk_scan(app: AppHandle, state: State<'_, AppState>) -> Result<JunkRep
             min_age_days: r.rule.min_age_days,
             files: r.findings.len(),
             bytes: r.bytes,
+            default_apply: r.rule.default_apply,
         });
         rule_state.push(JunkRuleState {
             id: r.rule.id.clone(),
@@ -1207,6 +1215,81 @@ async fn reveal_path(path: String) -> Result<(), String> {
     .map_err(|e| format!("reveal task failed: {e}"))?
 }
 
+// ---------------------------------------------------------- startup ------
+
+#[derive(Serialize)]
+struct StartupEntryDto {
+    index: usize,
+    name: String,
+    command: String,
+    location: String,
+    enabled: bool,
+    requires_admin: bool,
+}
+
+#[derive(Serialize)]
+struct StartupDto {
+    total: usize,
+    enabled: usize,
+    entries: Vec<StartupEntryDto>,
+}
+
+fn startup_dto(entries: &[StartupEntry]) -> StartupDto {
+    StartupDto {
+        total: entries.len(),
+        enabled: entries.iter().filter(|e| e.enabled).count(),
+        entries: entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| StartupEntryDto {
+                index: i,
+                name: e.name.clone(),
+                command: e.command.clone(),
+                location: e.location_label.clone(),
+                enabled: e.enabled,
+                requires_admin: e.requires_admin,
+            })
+            .collect(),
+    }
+}
+
+#[tauri::command]
+async fn startup_scan(state: State<'_, AppState>) -> Result<StartupDto, String> {
+    let entries = tauri::async_runtime::spawn_blocking(startup::list)
+        .await
+        .map_err(|e| format!("startup scan task failed: {e}"))?;
+    let dto = startup_dto(&entries);
+    *state.startup.lock().map_err(|_| "state lock poisoned")? = entries;
+    Ok(dto)
+}
+
+/// Toggle one entry by index. The webview never sends the target - it is
+/// re-derived from server-side state, then re-listed so the UI reflects the
+/// real post-change state (and disabled entries keep their new home).
+#[tauri::command]
+async fn startup_toggle(
+    state: State<'_, AppState>,
+    index: usize,
+    enable: bool,
+) -> Result<StartupDto, String> {
+    let entry = {
+        let entries = state.startup.lock().map_err(|_| "state lock poisoned")?;
+        entries
+            .get(index)
+            .cloned()
+            .ok_or("No such entry. Rescan first.")?
+    };
+    let refreshed = tauri::async_runtime::spawn_blocking(move || {
+        startup::set_enabled(&entry, enable).map(|_| startup::list())
+    })
+    .await
+    .map_err(|e| format!("startup toggle task failed: {e}"))?
+    .map_err(|e| e.to_string())?;
+    let dto = startup_dto(&refreshed);
+    *state.startup.lock().map_err(|_| "state lock poisoned")? = refreshed;
+    Ok(dto)
+}
+
 #[tauri::command]
 async fn pick_folder() -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -1246,7 +1329,9 @@ fn main() {
             toolbox_list,
             toolbox_run,
             toolbox_cancel,
-            toolbox_elevate
+            toolbox_elevate,
+            startup_scan,
+            startup_toggle
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clean Master");

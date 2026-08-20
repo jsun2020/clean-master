@@ -18,6 +18,16 @@ pub enum JunkCategory {
     Logs,
     Dumps,
     UpdateLeftover,
+    /// Privacy traces: recent-file lists, jump lists, and (opt-in) browser
+    /// history / cookies. Wopti-inspired; see `default_apply` for the safe
+    /// default split.
+    Trace,
+    /// Shortcuts (`.lnk`) whose target no longer exists.
+    BrokenShortcut,
+    /// Directories left with no files or subdirectories.
+    EmptyFolder,
+    /// Miscellaneous leftovers (e.g. zero-byte files).
+    Leftover,
 }
 
 impl JunkCategory {
@@ -28,8 +38,33 @@ impl JunkCategory {
             JunkCategory::Logs => "Log files",
             JunkCategory::Dumps => "Crash dumps & error reports",
             JunkCategory::UpdateLeftover => "Update leftovers",
+            JunkCategory::Trace => "Privacy traces",
+            JunkCategory::BrokenShortcut => "Broken shortcuts",
+            JunkCategory::EmptyFolder => "Empty folders",
+            JunkCategory::Leftover => "Leftovers",
         }
     }
+}
+
+/// How a rule decides whether a scanned entry is junk. `Glob` (the default)
+/// keeps the original behavior: match files by the include globs. The others
+/// add a predicate on top of the include match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchPredicate {
+    /// Include-glob match on files (original behavior).
+    #[default]
+    Glob,
+    /// File whose size is exactly 0 bytes (and matches the include globs).
+    ZeroByte,
+    /// `.lnk` shortcut whose resolved local target no longer exists.
+    BrokenShortcut,
+    /// Directory that contains no files and no subdirectories.
+    EmptyDir,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +90,15 @@ pub struct JunkRule {
     /// Files modified within the last N days are never flagged.
     #[serde(default)]
     pub min_age_days: u32,
+    /// How entries are matched. Defaults to `Glob` (files by include globs).
+    #[serde(default)]
+    pub predicate: MatchPredicate,
+    /// Whether this rule is applied by default. `false` marks a rule the user
+    /// must opt into (e.g. browser history / cookies, which log you out):
+    /// the CLI skips it unless `--all` is passed, and the GUI leaves it
+    /// unchecked. Defaults to `true`.
+    #[serde(default = "default_true")]
+    pub default_apply: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,9 +179,26 @@ pub fn evaluate_records(
 ) -> Result<Vec<JunkFinding>, CoreError> {
     let include = build_include_set(rule)?;
     let min_age_secs = rule.min_age_days as i64 * 86_400;
+    // Only the EmptyDir predicate needs to know which directories have
+    // children; compute it once and only when required.
+    let dirs_with_children = if rule.predicate == MatchPredicate::EmptyDir {
+        let mut set = std::collections::HashSet::new();
+        for r in records {
+            if let Some(parent) = Path::new(&r.path).parent() {
+                set.insert(parent.to_path_buf());
+            }
+        }
+        Some(set)
+    } else {
+        None
+    };
+
     let mut findings = Vec::new();
     for r in records {
-        if r.is_dir {
+        // Directories are candidates only for EmptyDir; every other predicate
+        // works on files (the original safety invariant).
+        let wants_dir = rule.predicate == MatchPredicate::EmptyDir;
+        if r.is_dir != wants_dir {
             continue;
         }
         let path = Path::new(&r.path);
@@ -148,7 +209,25 @@ pub fn evaluate_records(
         if !include.is_match(rel) {
             continue;
         }
+        // Freshness guard applies to every predicate.
         if now_unix - r.modified < min_age_secs {
+            continue;
+        }
+        let matches = match rule.predicate {
+            MatchPredicate::Glob => true,
+            MatchPredicate::ZeroByte => r.size == 0,
+            MatchPredicate::BrokenShortcut => is_broken_shortcut(path),
+            MatchPredicate::EmptyDir => {
+                // Never flag the base directory itself, and only a directory
+                // that has no scanned children (a true empty leaf).
+                path != base
+                    && dirs_with_children
+                        .as_ref()
+                        .map(|s| !s.contains(path))
+                        .unwrap_or(false)
+            }
+        };
+        if !matches {
             continue;
         }
         findings.push(JunkFinding {
@@ -159,6 +238,20 @@ pub fn evaluate_records(
         });
     }
     Ok(findings)
+}
+
+/// True only when `path` is a `.lnk` whose local target was resolved and does
+/// not exist. Unreadable files and shortcuts whose target cannot be resolved
+/// are treated as not-broken (never flagged) - broken means "confidently
+/// points at a missing local file".
+fn is_broken_shortcut(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    match crate::shortcut::local_target_path(&bytes) {
+        Some(target) => !Path::new(&target).exists(),
+        None => false,
+    }
 }
 
 pub struct RuleReport {
@@ -218,6 +311,10 @@ mod tests {
     const NOW: i64 = 1_800_000_000;
 
     fn rule(include: &[&str], min_age_days: u32) -> JunkRule {
+        rule_pred(include, min_age_days, MatchPredicate::Glob)
+    }
+
+    fn rule_pred(include: &[&str], min_age_days: u32, predicate: MatchPredicate) -> JunkRule {
         JunkRule {
             id: "test.rule".into(),
             category: JunkCategory::Temp,
@@ -226,6 +323,8 @@ mod tests {
             base: "unused".into(),
             include: include.iter().map(|s| s.to_string()).collect(),
             min_age_days,
+            predicate,
+            default_apply: true,
         }
     }
 
@@ -329,6 +428,66 @@ mod tests {
         // Evaluate against a DIFFERENT base: nothing may match.
         let other = dir.path().join("other-base");
         let findings = evaluate_records(&rule(&["**"], 0), &other, &records, NOW * 2).unwrap();
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn zero_byte_predicate_flags_only_empty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        fs::write(base.join("empty.dat"), b"").unwrap();
+        fs::write(base.join("full.dat"), b"content").unwrap();
+        let records = scan_records(base);
+        let findings =
+            evaluate_records(&rule_pred(&["**"], 0, MatchPredicate::ZeroByte), base, &records, NOW)
+                .unwrap();
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].record.path.ends_with("empty.dat"));
+    }
+
+    #[test]
+    fn empty_dir_predicate_flags_only_childless_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        fs::create_dir_all(base.join("empty")).unwrap();
+        fs::create_dir_all(base.join("full")).unwrap();
+        fs::write(base.join("full").join("a.txt"), b"x").unwrap();
+        // A directory whose only child is another (empty) directory is NOT a
+        // leaf, so it is not flagged this pass - only the true leaf is.
+        fs::create_dir_all(base.join("outer").join("inner")).unwrap();
+        let records = scan_records(base);
+        let findings = evaluate_records(
+            &rule_pred(&["**"], 0, MatchPredicate::EmptyDir),
+            base,
+            &records,
+            NOW,
+        )
+        .unwrap();
+        let flagged: Vec<_> = findings.iter().map(|f| f.record.name.clone()).collect();
+        assert!(flagged.contains(&"empty".to_string()));
+        assert!(flagged.contains(&"inner".to_string()));
+        assert!(!flagged.contains(&"full".to_string()));
+        assert!(!flagged.contains(&"outer".to_string()));
+        // The base directory itself is never flagged.
+        assert!(findings.iter().all(|f| Path::new(&f.record.path) != base));
+    }
+
+    #[test]
+    fn broken_shortcut_predicate_needs_missing_target() {
+        // Only exercises the non-.lnk fast path here (real .lnk parsing is
+        // unit-tested in the shortcut module); a plain file is never broken.
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        fs::write(base.join("notreally.lnk"), b"not a real shortcut").unwrap();
+        let records = scan_records(base);
+        let findings = evaluate_records(
+            &rule_pred(&["**/*.lnk"], 0, MatchPredicate::BrokenShortcut),
+            base,
+            &records,
+            NOW,
+        )
+        .unwrap();
+        // Unparseable .lnk -> treated as not-broken (safe), so nothing flagged.
         assert!(findings.is_empty());
     }
 

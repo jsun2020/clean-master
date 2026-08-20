@@ -81,6 +81,86 @@
       "base": "%LOCALAPPDATA%\\Microsoft\\Windows\\WER",
       "include": ["ReportQueue/**", "ReportArchive/**", "Temp/**"],
       "min_age_days": 7
+    },
+    {
+      "id": "win.broken_shortcuts",
+      "category": "broken_shortcut",
+      "risk": "safe",
+      "rationale": "Start Menu shortcuts whose target program no longer exists (uninstalled or moved). Only the dead .lnk is removed, never a program.",
+      "base": "%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs",
+      "include": ["**/*.lnk"],
+      "min_age_days": 0,
+      "predicate": "broken_shortcut"
+    },
+    {
+      "id": "win.empty_temp_folders",
+      "category": "empty_folder",
+      "risk": "safe",
+      "rationale": "Empty leaf directories left behind in the per-user temp folder; nothing is inside them.",
+      "base": "%TEMP%",
+      "include": ["**"],
+      "min_age_days": 1,
+      "predicate": "empty_dir"
+    },
+    {
+      "id": "win.zero_byte_temp",
+      "category": "leftover",
+      "risk": "safe",
+      "rationale": "Zero-byte files in the per-user temp folder; empty leftovers from interrupted writes.",
+      "base": "%TEMP%",
+      "include": ["**"],
+      "min_age_days": 1,
+      "predicate": "zero_byte"
+    },
+    {
+      "id": "trace.recent_items",
+      "category": "trace",
+      "risk": "safe",
+      "rationale": "Recent-files list and jump lists (the 'recent documents' history). Clears the list of files you opened; the files themselves are untouched. Opt-in.",
+      "base": "%APPDATA%\\Microsoft\\Windows\\Recent",
+      "include": ["**"],
+      "min_age_days": 0,
+      "default_apply": false
+    },
+    {
+      "id": "trace.chrome_history",
+      "category": "trace",
+      "risk": "safe",
+      "rationale": "Chrome browsing history and visited-site lists. Does NOT remove passwords, bookmarks or logins. Opt-in; skipped while Chrome is running.",
+      "base": "%LOCALAPPDATA%\\Google\\Chrome\\User Data",
+      "include": ["*/History", "*/History-journal", "*/Top Sites", "*/Top Sites-journal", "*/Visited Links"],
+      "min_age_days": 0,
+      "default_apply": false
+    },
+    {
+      "id": "trace.chrome_cookies",
+      "category": "trace",
+      "risk": "safe",
+      "rationale": "Chrome cookies. Clearing these logs you out of websites. Opt-in; skipped while Chrome is running.",
+      "base": "%LOCALAPPDATA%\\Google\\Chrome\\User Data",
+      "include": ["*/Network/Cookies", "*/Network/Cookies-journal"],
+      "min_age_days": 0,
+      "default_apply": false
+    },
+    {
+      "id": "trace.edge_history",
+      "category": "trace",
+      "risk": "safe",
+      "rationale": "Edge browsing history and visited-site lists. Does NOT remove passwords, favorites or logins. Opt-in; skipped while Edge is running.",
+      "base": "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data",
+      "include": ["*/History", "*/History-journal", "*/Top Sites", "*/Top Sites-journal", "*/Visited Links"],
+      "min_age_days": 0,
+      "default_apply": false
+    },
+    {
+      "id": "trace.edge_cookies",
+      "category": "trace",
+      "risk": "safe",
+      "rationale": "Edge cookies. Clearing these logs you out of websites. Opt-in; skipped while Edge is running.",
+      "base": "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data",
+      "include": ["*/Network/Cookies", "*/Network/Cookies-journal"],
+      "min_age_days": 0,
+      "default_apply": false
     }
   ]
 }
