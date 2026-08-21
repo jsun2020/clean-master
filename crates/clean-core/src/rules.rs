@@ -438,9 +438,13 @@ mod tests {
         fs::write(base.join("empty.dat"), b"").unwrap();
         fs::write(base.join("full.dat"), b"content").unwrap();
         let records = scan_records(base);
-        let findings =
-            evaluate_records(&rule_pred(&["**"], 0, MatchPredicate::ZeroByte), base, &records, NOW)
-                .unwrap();
+        let findings = evaluate_records(
+            &rule_pred(&["**"], 0, MatchPredicate::ZeroByte),
+            base,
+            &records,
+            NOW,
+        )
+        .unwrap();
         assert_eq!(findings.len(), 1);
         assert!(findings[0].record.path.ends_with("empty.dat"));
     }

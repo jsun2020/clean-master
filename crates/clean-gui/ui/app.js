@@ -544,11 +544,26 @@ $("btn-an-browse").addEventListener("click", async () => {
 
 $("btn-an-scan").addEventListener("click", async () => {
   if (!anPath) return;
+  $("btn-an-scan").disabled = true;
+  // Instant view: last saved snapshot of this root, if one exists. The
+  // fresh scan then runs behind it (usually a quick USN-journal diff).
+  let cachedShown = false;
+  try {
+    const cached = await invoke("analyze_cached", { path: anPath });
+    if (cached) {
+      lastAnalyze = cached;
+      anOpenExt = null;
+      renderAnalyze(cached);
+      cachedShown = true;
+    }
+  } catch (_) { /* cache is best-effort; fall through to the scan */ }
   $("an-progress").classList.add("on");
   $("an-progress").hidden = false;
-  $("an-panels").hidden = true;
-  $("an-summary").hidden = true;
-  $("btn-an-scan").disabled = true;
+  if (!cachedShown) {
+    $("an-panels").hidden = true;
+    $("an-summary").hidden = true;
+    $("an-fresh").hidden = true;
+  }
   try {
     const rep = await invoke("analyze_path", { path: anPath });
     lastAnalyze = rep;
@@ -561,6 +576,24 @@ $("btn-an-scan").addEventListener("click", async () => {
     $("btn-an-scan").disabled = false;
   }
 });
+
+function fmtAge(secs) {
+  if (secs < 90) return t("age_just_now");
+  const m = Math.round(secs / 60);
+  if (m < 90) return tf("age_minutes", { n: m });
+  const h = Math.round(secs / 3600);
+  if (h < 36) return tf("age_hours", { n: h });
+  return tf("age_days", { n: Math.round(secs / 86400) });
+}
+
+function showFreshness(rep) {
+  const el = $("an-fresh");
+  el.hidden = false;
+  el.classList.toggle("stale", !!rep.cached);
+  if (rep.cached) el.textContent = tf("an_cached", { age: fmtAge(rep.age_secs) });
+  else if (rep.method === "delta") el.textContent = tf("an_fresh_delta", { n: fmtCount(rep.delta_dirs) });
+  else el.textContent = t("an_fresh_full");
+}
 
 /* Rows with a concrete path (full) are reveal targets: clicking opens the
    file manager with the item selected so the user can view or manually
@@ -638,6 +671,7 @@ function renderAnalyze(rep) {
   const maxA = Math.max(1, ...rep.ages.map((a) => a.bytes));
   $("an-ages").innerHTML = rep.ages.map((a) => meterRow(trAge(a.label), a.bytes, maxA, filesLabel(a.count))).join("");
   $("an-panels").hidden = false;
+  showFreshness(rep);
 }
 
 function shortRoot(p) {
