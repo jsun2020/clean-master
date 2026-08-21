@@ -115,15 +115,16 @@ mod imp {
     }
 
     fn reg_value_to_string(v: &RegValue) -> Option<String> {
-        use std::convert::TryInto;
         // REG_SZ / REG_EXPAND_SZ hold UTF-16LE with a trailing NUL.
         if v.vtype != REG_SZ && v.vtype != REG_EXPAND_SZ {
             return None;
         }
         let units: Vec<u16> = v
             .bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes(c.try_into().unwrap()))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .take_while(|&u| u != 0)
             .collect();
         Some(String::from_utf16_lossy(&units))
