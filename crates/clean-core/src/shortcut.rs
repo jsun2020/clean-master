@@ -113,7 +113,7 @@ mod tests {
     fn lnk_with_ansi_target(target: &str) -> Vec<u8> {
         let mut b = vec![0u8; HEADER_SIZE];
         b[0..4].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes()); // HeaderSize
-        // LinkFlags: HasLinkInfo only (no IDList) at 0x14.
+                                                                      // LinkFlags: HasLinkInfo only (no IDList) at 0x14.
         b[0x14..0x18].copy_from_slice(&FLAG_HAS_LINK_INFO.to_le_bytes());
 
         // LinkInfo (ANSI, HeaderSize 0x1C): fixed 28-byte header + base path.

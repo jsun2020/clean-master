@@ -2,6 +2,7 @@ use crate::error::CoreError;
 use crate::types::{systime_to_unix, FileRecord, SkippedPath};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -67,17 +68,17 @@ struct WalkCtx<'a> {
     progress: &'a (dyn Fn(u64) + Sync),
 }
 
-fn walk_dir(dir: &Path, ctx: &WalkCtx) {
-    let read = match std::fs::read_dir(dir) {
-        Ok(r) => r,
-        Err(e) => {
-            ctx.sink.lock().unwrap().skipped.push(SkippedPath {
-                path: dir.display().to_string(),
-                reason: e.to_string(),
-            });
-            return;
-        }
-    };
+/// One directory's direct children, as the walker sees them.
+struct DirListing {
+    records: Vec<FileRecord>,
+    skipped: Vec<SkippedPath>,
+    subdirs: Vec<PathBuf>,
+}
+
+/// Enumerate one directory (no recursion). Metadata comes from the
+/// enumeration itself - no per-file open. Err = read_dir itself failed.
+fn enumerate_dir(dir: &Path, excludes: Option<&GlobSet>) -> Result<DirListing, String> {
+    let read = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
 
     let mut records: Vec<FileRecord> = Vec::new();
     let mut skipped: Vec<SkippedPath> = Vec::new();
@@ -95,7 +96,7 @@ fn walk_dir(dir: &Path, ctx: &WalkCtx) {
             }
         };
         let path = entry.path();
-        if let Some(set) = &ctx.excludes {
+        if let Some(set) = excludes {
             if set.is_match(&path) {
                 continue;
             }
@@ -159,6 +160,27 @@ fn walk_dir(dir: &Path, ctx: &WalkCtx) {
         }
     }
 
+    Ok(DirListing {
+        records,
+        skipped,
+        subdirs,
+    })
+}
+
+fn walk_dir(dir: &Path, ctx: &WalkCtx) {
+    let listing = match enumerate_dir(dir, ctx.excludes.as_ref()) {
+        Ok(l) => l,
+        Err(reason) => {
+            ctx.sink.lock().unwrap().skipped.push(SkippedPath {
+                path: dir.display().to_string(),
+                reason,
+            });
+            return;
+        }
+    };
+    let mut records = listing.records;
+    let mut skipped = listing.skipped;
+
     let batch = records.len() as u64;
     {
         let mut sink = ctx.sink.lock().unwrap();
@@ -168,7 +190,7 @@ fn walk_dir(dir: &Path, ctx: &WalkCtx) {
     let seen = ctx.seen.fetch_add(batch, Ordering::Relaxed) + batch;
     (ctx.progress)(seen);
 
-    subdirs.par_iter().for_each(|d| walk_dir(d, ctx));
+    listing.subdirs.par_iter().for_each(|d| walk_dir(d, ctx));
 }
 
 impl ScanBackend for WalkBackend {
@@ -189,13 +211,156 @@ impl ScanBackend for WalkBackend {
         };
         walk_dir(root, &ctx);
         let mut outcome = ctx.sink.into_inner().unwrap();
-        // Deterministic order + sequential ids regardless of thread timing.
-        outcome.records.sort_by(|a, b| a.path.cmp(&b.path));
-        for (i, r) in outcome.records.iter_mut().enumerate() {
-            r.id = i as u64;
-        }
+        finalize(&mut outcome);
         Ok(outcome)
     }
+}
+
+/// Deterministic order + sequential ids regardless of thread timing.
+fn finalize(outcome: &mut ScanOutcome) {
+    outcome.records.sort_by(|a, b| a.path.cmp(&b.path));
+    for (i, r) in outcome.records.iter_mut().enumerate() {
+        r.id = i as u64;
+    }
+}
+
+// ---------------------------------------------------------- merge scan --
+
+struct MergeCtx<'a> {
+    excludes: Option<GlobSet>,
+    /// Snapshot records indexed by their parent directory (lowercased path).
+    children: HashMap<String, Vec<&'a FileRecord>>,
+    /// Lowercased paths of every directory the snapshot knows (plus root).
+    snap_dirs: HashSet<String>,
+    /// Lowercased paths of directories whose direct children changed.
+    dirty: &'a HashSet<String>,
+    sink: Mutex<ScanOutcome>,
+    /// Directories re-enumerated live this run (lowercased).
+    live_visited: Mutex<HashSet<String>>,
+    seen: AtomicU64,
+    progress: &'a (dyn Fn(u64) + Sync),
+}
+
+fn merge_visit(dir: &str, ctx: &MergeCtx) {
+    let lower = dir.to_lowercase();
+    // A directory is walked live when the journal marked it dirty OR the
+    // snapshot has never seen it (i.e. it appeared since the snapshot).
+    // Everything else is served straight from the snapshot. Dirty paths are
+    // only ever consulted as a test - visits always flow down from the root,
+    // so deleted or excluded directories are simply never reached.
+    let live = ctx.dirty.contains(&lower) || !ctx.snap_dirs.contains(&lower);
+
+    let (mut records, mut skipped, subdirs): (Vec<FileRecord>, Vec<SkippedPath>, Vec<String>) =
+        if live {
+            ctx.live_visited.lock().unwrap().insert(lower);
+            match enumerate_dir(Path::new(dir), ctx.excludes.as_ref()) {
+                Ok(l) => {
+                    let subdirs = l.subdirs.iter().map(|p| p.display().to_string()).collect();
+                    (l.records, l.skipped, subdirs)
+                }
+                Err(reason) => {
+                    // The dirty directory itself is gone (deleted after the
+                    // journal read); its snapshot subtree is dropped simply by
+                    // not emitting it.
+                    ctx.sink.lock().unwrap().skipped.push(SkippedPath {
+                        path: dir.to_string(),
+                        reason,
+                    });
+                    return;
+                }
+            }
+        } else {
+            let recs: Vec<FileRecord> = ctx
+                .children
+                .get(&lower)
+                .map(|v| v.iter().map(|r| (*r).clone()).collect())
+                .unwrap_or_default();
+            let subdirs = recs
+                .iter()
+                .filter(|r| r.is_dir)
+                .map(|r| r.path.clone())
+                .collect();
+            (recs, Vec::new(), subdirs)
+        };
+
+    let batch = records.len() as u64;
+    {
+        let mut sink = ctx.sink.lock().unwrap();
+        sink.records.append(&mut records);
+        sink.skipped.append(&mut skipped);
+    }
+    let seen = ctx.seen.fetch_add(batch, Ordering::Relaxed) + batch;
+    (ctx.progress)(seen);
+
+    subdirs.par_iter().for_each(|d| merge_visit(d, ctx));
+}
+
+/// Differential rescan: rebuild a full `ScanOutcome` for `root`, re-reading
+/// only the directories in `dirty_lower` (lowercased full paths, typically
+/// from the USN journal) and serving every other directory from `snapshot`.
+///
+/// Correctness contract: with an accurate dirty set this returns exactly what
+/// a fresh full scan would (modulo access times) - the equivalence tests
+/// below and in tests/delta_e2e.rs enforce it.
+///
+/// Returns the outcome plus how many directories were enumerated live.
+pub fn merge_scan(
+    root: &Path,
+    opts: &ScanOptions,
+    snapshot: &ScanOutcome,
+    dirty_lower: &HashSet<String>,
+    progress: &(dyn Fn(u64) + Sync),
+) -> Result<(ScanOutcome, u64), CoreError> {
+    if !root.exists() {
+        return Err(CoreError::InvalidRoot(root.display().to_string()));
+    }
+    let root_str = root.display().to_string();
+    let root_lower = root_str.to_lowercase();
+
+    let mut children: HashMap<String, Vec<&FileRecord>> = HashMap::new();
+    let mut snap_dirs: HashSet<String> = HashSet::new();
+    snap_dirs.insert(root_lower.clone());
+    for r in &snapshot.records {
+        if r.is_dir {
+            snap_dirs.insert(r.path.to_lowercase());
+        }
+        if let Some(parent) = Path::new(&r.path).parent() {
+            children
+                .entry(parent.display().to_string().to_lowercase())
+                .or_default()
+                .push(r);
+        }
+    }
+
+    let ctx = MergeCtx {
+        excludes: build_globset(&opts.excludes)?,
+        children,
+        snap_dirs,
+        dirty: dirty_lower,
+        sink: Mutex::new(ScanOutcome::default()),
+        live_visited: Mutex::new(HashSet::new()),
+        seen: AtomicU64::new(0),
+        progress,
+    };
+    merge_visit(&root_str, &ctx);
+
+    let live_visited = ctx.live_visited.into_inner().unwrap();
+    let mut outcome = ctx.sink.into_inner().unwrap();
+    // Carry forward unreadable-path notes from the snapshot, except where the
+    // directory was re-enumerated live (which re-reports if still unreadable).
+    for s in &snapshot.skipped {
+        let lower = s.path.to_lowercase();
+        let parent_lower = Path::new(&s.path)
+            .parent()
+            .map(|p| p.display().to_string().to_lowercase());
+        let revisited = live_visited.contains(&lower)
+            || parent_lower.is_some_and(|p| live_visited.contains(&p));
+        if !revisited {
+            outcome.skipped.push(s.clone());
+        }
+    }
+    finalize(&mut outcome);
+    Ok((outcome, live_visited.len() as u64))
 }
 
 #[cfg(test)]
@@ -301,5 +466,159 @@ mod tests {
             })
             .unwrap();
         assert_eq!(max_seen.load(Ordering::Relaxed), 7);
+    }
+
+    // ------------------------------------------------------- merge scan --
+
+    /// Every FileRecord field except `accessed`, in declaration order.
+    type RecordSansAtime = (String, String, Option<String>, u64, i64, i64, bool, u32);
+
+    /// Access times can drift between two scans (AV/indexer touches); every
+    /// other field must match exactly, so equivalence ignores `accessed`.
+    fn strip_atime(out: &ScanOutcome) -> Vec<RecordSansAtime> {
+        out.records
+            .iter()
+            .map(|r| {
+                (
+                    r.path.clone(),
+                    r.name.clone(),
+                    r.ext.clone(),
+                    r.size,
+                    r.created,
+                    r.modified,
+                    r.is_dir,
+                    r.attributes,
+                )
+            })
+            .collect()
+    }
+
+    fn merge(root: &Path, snapshot: &ScanOutcome, dirty: &[String]) -> (ScanOutcome, u64) {
+        let set: HashSet<String> = dirty.iter().map(|s| s.to_lowercase()).collect();
+        merge_scan(root, &ScanOptions::default(), snapshot, &set, &|_| {}).unwrap()
+    }
+
+    fn lower(p: &Path) -> String {
+        p.display().to_string().to_lowercase()
+    }
+
+    #[test]
+    fn merge_with_all_dirs_dirty_equals_full_scan() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        let mut dirty: Vec<String> = snap
+            .records
+            .iter()
+            .filter(|r| r.is_dir)
+            .map(|r| r.path.clone())
+            .collect();
+        dirty.push(dir.path().display().to_string());
+        let (merged, live) = merge(dir.path(), &snap, &dirty);
+        assert_eq!(strip_atime(&merged), strip_atime(&snap));
+        assert_eq!(live, 4, "root + 3 subdirs all enumerated live");
+    }
+
+    #[test]
+    fn merge_with_nothing_dirty_serves_snapshot_verbatim() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        let (merged, live) = merge(dir.path(), &snap, &[]);
+        assert_eq!(merged.records, snap.records);
+        assert_eq!(live, 0, "no directory may be touched");
+    }
+
+    /// Control: with an empty dirty set, a mutation must NOT show up - proof
+    /// the merge really reads the snapshot rather than sneaking a full walk.
+    #[test]
+    fn merge_without_dirty_mark_stays_stale() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        fs::write(dir.path().join("cache").join("tmp.log"), vec![9u8; 9999]).unwrap();
+        let (merged, _) = merge(dir.path(), &snap, &[]);
+        let old = merged.records.iter().find(|r| r.name == "tmp.log").unwrap();
+        assert_eq!(old.size, 2048, "stale by design without a dirty mark");
+    }
+
+    #[test]
+    fn merge_picks_up_modified_file_in_dirty_dir() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        fs::write(dir.path().join("cache").join("tmp.log"), vec![9u8; 9999]).unwrap();
+        let (merged, live) = merge(dir.path(), &snap, &[lower(&dir.path().join("cache"))]);
+        let fresh = scan(dir.path(), &[]);
+        assert_eq!(strip_atime(&merged), strip_atime(&fresh));
+        assert_eq!(live, 1);
+        let rec = merged.records.iter().find(|r| r.name == "tmp.log").unwrap();
+        assert_eq!(rec.size, 9999);
+    }
+
+    #[test]
+    fn merge_picks_up_added_and_deleted_files() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        fs::remove_file(dir.path().join("a.txt")).unwrap();
+        fs::write(dir.path().join("docs").join("new.bin"), vec![3u8; 12]).unwrap();
+        let (merged, _) = merge(
+            dir.path(),
+            &snap,
+            &[lower(dir.path()), lower(&dir.path().join("docs"))],
+        );
+        let fresh = scan(dir.path(), &[]);
+        assert_eq!(strip_atime(&merged), strip_atime(&fresh));
+        assert!(merged.records.iter().all(|r| r.name != "a.txt"));
+        assert!(merged.records.iter().any(|r| r.name == "new.bin"));
+    }
+
+    #[test]
+    fn merge_walks_brand_new_subtree() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        let deep = dir.path().join("cache").join("newdir").join("sub");
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("fresh.dat"), vec![7u8; 42]).unwrap();
+        // Only the immediate parent is dirty; the new subtree must be walked
+        // live because the snapshot has never seen it.
+        let (merged, live) = merge(dir.path(), &snap, &[lower(&dir.path().join("cache"))]);
+        let fresh = scan(dir.path(), &[]);
+        assert_eq!(strip_atime(&merged), strip_atime(&fresh));
+        assert_eq!(live, 3, "cache + newdir + sub");
+        assert!(merged.records.iter().any(|r| r.name == "fresh.dat"));
+    }
+
+    #[test]
+    fn merge_handles_renamed_directory() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        fs::rename(dir.path().join("docs"), dir.path().join("papers")).unwrap();
+        let (merged, _) = merge(dir.path(), &snap, &[lower(dir.path())]);
+        let fresh = scan(dir.path(), &[]);
+        assert_eq!(strip_atime(&merged), strip_atime(&fresh));
+        assert!(merged.records.iter().all(|r| !r.path.contains("docs")));
+        assert!(merged.records.iter().any(|r| r.name == "papers"));
+    }
+
+    #[test]
+    fn merge_drops_deleted_subtree() {
+        let dir = fixture();
+        let snap = scan(dir.path(), &[]);
+        fs::remove_dir_all(dir.path().join("cache")).unwrap();
+        let (merged, _) = merge(dir.path(), &snap, &[lower(dir.path())]);
+        let fresh = scan(dir.path(), &[]);
+        assert_eq!(strip_atime(&merged), strip_atime(&fresh));
+        assert!(merged.records.iter().all(|r| !r.path.contains("cache")));
+    }
+
+    #[test]
+    fn merge_dirty_lookup_is_case_insensitive() {
+        let dir = fixture();
+        fs::create_dir_all(dir.path().join("MixedCase")).unwrap();
+        fs::write(dir.path().join("MixedCase").join("x.txt"), b"1").unwrap();
+        let snap = scan(dir.path(), &[]);
+        fs::write(dir.path().join("MixedCase").join("x.txt"), b"12345").unwrap();
+        // Dirty sets are lowercased by contract (USN resolution lowercases);
+        // the snapshot path keeps its real casing - the lookup must match.
+        let (merged, _) = merge(dir.path(), &snap, &[lower(&dir.path().join("MixedCase"))]);
+        let rec = merged.records.iter().find(|r| r.name == "x.txt").unwrap();
+        assert_eq!(rec.size, 5);
     }
 }

@@ -495,3 +495,12 @@ button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(-
   white-space: pre-wrap; word-break: break-all; user-select: text;
 }
 .tb-console-out .tb-cmd { color: var(--emerald-hi); }
+
+/* ------------------------------------------------- v0.8.0 scan cache -- */
+
+.an-fresh {
+  font-size: 12.5px; color: var(--ink-3); margin: 2px 0 0;
+}
+.an-fresh.stale {
+  color: var(--amber);
+}

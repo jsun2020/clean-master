@@ -40,6 +40,10 @@ Five screens, same safety contract as the CLI:
   - *Duplicates* - pick a folder, full BLAKE3 verification, the KEEP copy is
     marked and can never be deleted; opt groups in or out.
 - **Space Analyze** - largest files/folders, by type, by age. Read-only.
+  Re-analyzing a folder is instant: the last scan renders immediately from a
+  saved snapshot while a background refresh reads the NTFS change journal
+  (no admin needed) and re-checks only the folders that actually changed;
+  anything the journal cannot vouch for falls back to a full rescan.
 - **Developer** - pick a folder; finds regenerable dependency/build folders
   (node_modules, Rust/Maven `target`, Gradle output, Python venvs, .NET
   bin/obj) grouped by project. Off by default (opt-in per project); an

@@ -9,11 +9,13 @@ pub mod error;
 pub mod report;
 pub mod rules;
 pub mod safety;
+pub mod scan_cache;
 pub mod scanner;
 pub mod session;
 pub mod shortcut;
 pub mod startup;
 pub mod toolbox;
 pub mod types;
+pub mod usn;
 
 pub use error::CoreError;

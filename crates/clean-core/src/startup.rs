@@ -103,9 +103,7 @@ mod imp {
 
     fn origin_key(origin: StartupOrigin) -> Option<(RegKey, &'static str)> {
         match origin {
-            StartupOrigin::RunCurrentUser => {
-                Some((RegKey::predef(HKEY_CURRENT_USER), RUN_SUBKEY))
-            }
+            StartupOrigin::RunCurrentUser => Some((RegKey::predef(HKEY_CURRENT_USER), RUN_SUBKEY)),
             StartupOrigin::RunLocalMachine => {
                 Some((RegKey::predef(HKEY_LOCAL_MACHINE), RUN_SUBKEY))
             }
@@ -158,12 +156,10 @@ mod imp {
     fn startup_folder(origin: StartupOrigin) -> Option<std::path::PathBuf> {
         match origin {
             StartupOrigin::FolderCurrentUser => std::env::var("APPDATA").ok().map(|a| {
-                std::path::PathBuf::from(a)
-                    .join(r"Microsoft\Windows\Start Menu\Programs\Startup")
+                std::path::PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\Startup")
             }),
             StartupOrigin::FolderCommon => std::env::var("ProgramData").ok().map(|a| {
-                std::path::PathBuf::from(a)
-                    .join(r"Microsoft\Windows\Start Menu\Programs\Startup")
+                std::path::PathBuf::from(a).join(r"Microsoft\Windows\Start Menu\Programs\Startup")
             }),
             _ => None,
         }
@@ -241,7 +237,10 @@ mod imp {
             }
         }
         // Disabled Startup-folder shortcuts live under the backup folder.
-        for origin in [StartupOrigin::FolderCurrentUser, StartupOrigin::FolderCommon] {
+        for origin in [
+            StartupOrigin::FolderCurrentUser,
+            StartupOrigin::FolderCommon,
+        ] {
             let Some(dir) = disabled_folder(origin) else {
                 continue;
             };
@@ -276,9 +275,8 @@ mod imp {
     }
 
     fn disable_registry(entry: &StartupEntry) -> Result<(), CoreError> {
-        let (root, sub) = origin_key(entry.origin).ok_or_else(|| {
-            CoreError::Session("not a registry startup entry".into())
-        })?;
+        let (root, sub) = origin_key(entry.origin)
+            .ok_or_else(|| CoreError::Session("not a registry startup entry".into()))?;
         let key = root
             .open_subkey_with_flags(sub, KEY_READ | KEY_SET_VALUE)
             .map_err(|e| io_err(format!("{sub} (needs admin for HKLM)"), e))?;
@@ -306,9 +304,8 @@ mod imp {
     }
 
     fn enable_registry(entry: &StartupEntry) -> Result<(), CoreError> {
-        let (root, sub) = origin_key(entry.origin).ok_or_else(|| {
-            CoreError::Session("not a registry startup entry".into())
-        })?;
+        let (root, sub) = origin_key(entry.origin)
+            .ok_or_else(|| CoreError::Session("not a registry startup entry".into()))?;
         let backup = RegKey::predef(HKEY_CURRENT_USER)
             .open_subkey_with_flags(BACKUP_SUBKEY, KEY_READ | KEY_SET_VALUE)
             .map_err(|e| io_err(BACKUP_SUBKEY.into(), e))?;

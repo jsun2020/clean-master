@@ -15,9 +15,11 @@ use clean_core::safety::{
     delete_dirs_permanently, delete_files_permanently, deletion_allowed, recycle_files,
     ActionManifest, Disposition,
 };
-use clean_core::scanner::{ScanBackend, ScanOptions, WalkBackend};
+use clean_core::scan_cache::{self, Snapshot, SnapshotMeta};
+use clean_core::scanner::{merge_scan, ScanBackend, ScanOptions, ScanOutcome, WalkBackend};
 use clean_core::startup::{self, StartupEntry};
 use clean_core::toolbox::{self, Input, Mode, Tool};
+use clean_core::usn::{self, DeltaVerdict};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -201,6 +203,14 @@ struct AnalyzeDto {
     top_dirs: Vec<DirDto>,
     exts: Vec<ExtDto>,
     ages: Vec<AgeDto>,
+    /// True when served from a saved snapshot (instant, possibly stale).
+    cached: bool,
+    /// Snapshot age in seconds (0 for fresh results).
+    age_secs: i64,
+    /// How the result was produced: "cache" | "delta" | "full".
+    method: String,
+    /// Directories re-enumerated live in a delta refresh (0 otherwise).
+    delta_dirs: u64,
 }
 
 #[derive(Serialize)]
@@ -503,6 +513,97 @@ async fn dupes_apply(
     })
 }
 
+/// Saved Analyze snapshots (instant reopen + USN differential refresh).
+fn scan_cache_dir() -> PathBuf {
+    manifest_dir().join("scan-cache")
+}
+
+fn build_analyze_dto(
+    outcome: &ScanOutcome,
+    root_str: &str,
+    cached: bool,
+    age_secs: i64,
+    method: &str,
+    delta_dirs: u64,
+) -> AnalyzeDto {
+    let records = &outcome.records;
+    let files = records.iter().filter(|r| !r.is_dir).count() as u64;
+    let dirs = records.iter().filter(|r| r.is_dir).count() as u64;
+    let total_bytes: u64 = records.iter().filter(|r| !r.is_dir).map(|r| r.size).sum();
+    AnalyzeDto {
+        total_bytes,
+        files,
+        dirs,
+        skipped: outcome.skipped.len(),
+        top_files: report::top_files(records, 15)
+            .into_iter()
+            .map(|r| FileDto {
+                path: r.path.clone(),
+                bytes: r.size,
+            })
+            .collect(),
+        top_dirs: report::top_dirs(records, root_str, 15)
+            .into_iter()
+            .map(|d| DirDto {
+                path: d.path,
+                bytes: d.bytes,
+                files: d.files,
+            })
+            .collect(),
+        exts: report::by_extension(records, 12)
+            .into_iter()
+            .map(|e| ExtDto {
+                top: report::top_files_of_ext(records, &e.ext, 25)
+                    .into_iter()
+                    .map(|r| FileDto {
+                        path: r.path.clone(),
+                        bytes: r.size,
+                    })
+                    .collect(),
+                ext: e.ext,
+                count: e.count,
+                bytes: e.bytes,
+            })
+            .collect(),
+        ages: report::by_age(records, now_unix())
+            .into_iter()
+            .map(|a| AgeDto {
+                label: a.label.to_string(),
+                count: a.count,
+                bytes: a.bytes,
+            })
+            .collect(),
+        root: root_str.to_string(),
+        cached,
+        age_secs,
+        method: method.to_string(),
+        delta_dirs,
+    }
+}
+
+/// Instant view of the last saved scan of `path`, if one exists. Read-only:
+/// never touches the disk tree, so it is safe to call before every refresh.
+#[tauri::command]
+async fn analyze_cached(path: String) -> Result<Option<AnalyzeDto>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file = scan_cache::cache_file(&scan_cache_dir(), &path, &[]);
+        let Some(snap) = scan_cache::load(&file) else {
+            return Ok(None);
+        };
+        let age = (now_unix() - snap.meta.created_unix).max(0);
+        Ok(Some(build_analyze_dto(
+            &snap.outcome,
+            &path,
+            true,
+            age,
+            "cache",
+            0,
+        )))
+    })
+    .await
+    .map_err(|e| format!("analyze task failed: {e}"))?
+}
+
 #[tauri::command]
 async fn analyze_path(app: AppHandle, path: String) -> Result<AnalyzeDto, String> {
     let root = PathBuf::from(&path);
@@ -511,63 +612,69 @@ async fn analyze_path(app: AppHandle, path: String) -> Result<AnalyzeDto, String
     }
     let app2 = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let outcome = WalkBackend
-            .scan(&root, &ScanOptions::default(), &|seen| {
-                if seen % 4096 == 0 {
-                    emit_progress(&app2, "analyze-scan", "scanning", seen);
-                }
-            })
-            .map_err(|e| e.to_string())?;
-        let records = &outcome.records;
-        let files = records.iter().filter(|r| !r.is_dir).count() as u64;
-        let dirs = records.iter().filter(|r| r.is_dir).count() as u64;
-        let total_bytes: u64 = records.iter().filter(|r| !r.is_dir).map(|r| r.size).sum();
         let root_str = root.display().to_string();
-        Ok(AnalyzeDto {
-            total_bytes,
-            files,
-            dirs,
-            skipped: outcome.skipped.len(),
-            top_files: report::top_files(records, 15)
-                .into_iter()
-                .map(|r| FileDto {
-                    path: r.path.clone(),
-                    bytes: r.size,
-                })
-                .collect(),
-            top_dirs: report::top_dirs(records, &root_str, 15)
-                .into_iter()
-                .map(|d| DirDto {
-                    path: d.path,
-                    bytes: d.bytes,
-                    files: d.files,
-                })
-                .collect(),
-            exts: report::by_extension(records, 12)
-                .into_iter()
-                .map(|e| ExtDto {
-                    top: report::top_files_of_ext(records, &e.ext, 25)
-                        .into_iter()
-                        .map(|r| FileDto {
-                            path: r.path.clone(),
-                            bytes: r.size,
-                        })
-                        .collect(),
-                    ext: e.ext,
-                    count: e.count,
-                    bytes: e.bytes,
-                })
-                .collect(),
-            ages: report::by_age(records, now_unix())
-                .into_iter()
-                .map(|a| AgeDto {
-                    label: a.label.to_string(),
-                    count: a.count,
-                    bytes: a.bytes,
-                })
-                .collect(),
-            root: root_str,
-        })
+        let opts = ScanOptions::default();
+        let cache_file = scan_cache::cache_file(&scan_cache_dir(), &root_str, &opts.excludes);
+        let progress = |seen: u64| {
+            if seen.is_multiple_of(4096) {
+                emit_progress(&app2, "analyze-scan", "scanning", seen);
+            }
+        };
+
+        // Checkpoint BEFORE scanning: anything that changes mid-scan stays
+        // above the checkpoint and gets re-processed by the next delta.
+        let new_cp = usn::checkpoint_for(&root);
+
+        // Differential path: snapshot + journal both vouch for the interval.
+        let mut result: Option<(ScanOutcome, &str, u64)> = None;
+        if let Some(snap) = scan_cache::load(&cache_file) {
+            if let Some(old_cp) = snap.meta.usn {
+                // Resolving one changed dir costs ~1 file open; past half the
+                // snapshot's dir count a full walk is competitive anyway.
+                let dir_count = snap.outcome.records.iter().filter(|r| r.is_dir).count();
+                let max_dirty = (dir_count / 2).clamp(256, 50_000);
+                if let DeltaVerdict::Dirty(dirty) =
+                    usn::changed_dirs_since(&root, &old_cp, max_dirty)
+                {
+                    if let Ok((outcome, live)) =
+                        merge_scan(&root, &opts, &snap.outcome, &dirty, &progress)
+                    {
+                        result = Some((outcome, "delta", live));
+                    }
+                }
+            }
+        }
+        let (outcome, method, delta_dirs) = match result {
+            Some(r) => r,
+            None => {
+                let outcome = WalkBackend
+                    .scan(&root, &opts, &progress)
+                    .map_err(|e| e.to_string())?;
+                (outcome, "full", 0)
+            }
+        };
+
+        // Persist for the next launch; a failed save only costs speed later.
+        let snap = Snapshot {
+            meta: SnapshotMeta {
+                root: root_str.clone(),
+                excludes: opts.excludes.clone(),
+                created_unix: now_unix(),
+                usn: new_cp,
+            },
+            outcome,
+        };
+        let _ = scan_cache::save(&cache_file, &snap);
+        scan_cache::prune(&scan_cache_dir(), 5);
+
+        Ok(build_analyze_dto(
+            &snap.outcome,
+            &root_str,
+            false,
+            0,
+            method,
+            delta_dirs,
+        ))
     })
     .await
     .map_err(|e| format!("analyze task failed: {e}"))?
@@ -1305,6 +1412,13 @@ async fn startup_toggle(
 
 #[tauri::command]
 async fn pick_folder() -> Result<Option<String>, String> {
+    // E2E seam: native dialogs cannot be automated, so tests preselect the
+    // folder via env var. Inert in production (variable absent).
+    if let Ok(p) = std::env::var("CM_TEST_PICK_FOLDER") {
+        if !p.trim().is_empty() {
+            return Ok(Some(p));
+        }
+    }
     tauri::async_runtime::spawn_blocking(|| {
         rfd::FileDialog::new()
             .set_title("Choose a folder")
@@ -1335,6 +1449,7 @@ fn main() {
             apps_scan,
             app_uninstall,
             analyze_path,
+            analyze_cached,
             reveal_path,
             undo_status,
             undo_last,
