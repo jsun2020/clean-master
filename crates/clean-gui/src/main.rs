@@ -4,7 +4,12 @@
 //! the UI selects rule ids / group indexes, and every deletion target is
 //! re-derived from server-side state and passed through `deletion_allowed`.
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// GUI subsystem in ALL builds so no console window ever appears - not just in
+// release. (Previously gated on `not(debug_assertions)`, which left the debug
+// build console-subsystem and popped a black console next to the window; it
+// also made the delayed-start shim flash a console in debug.) Developers who
+// want stdout can run the CLI binary (`clean.exe`) or use file logging.
+#![windows_subsystem = "windows"]
 
 use clean_core::appscan::{scan_installed_apps, AppRemoval, InstalledApp};
 use clean_core::devscan::scan_projects;
