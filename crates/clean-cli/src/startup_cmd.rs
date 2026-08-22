@@ -1,5 +1,13 @@
-use clean_core::startup::{self, StartupEntry};
+use clean_core::startup::{self, BootImpact, StartupEntry};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, Table};
+
+fn impact_label(i: BootImpact) -> &'static str {
+    match i {
+        BootImpact::High => "High",
+        BootImpact::Medium => "Medium",
+        BootImpact::Low => "Low",
+    }
+}
 
 /// `clean startup list`
 pub fn list() -> Result<(), String> {
@@ -10,21 +18,30 @@ pub fn list() -> Result<(), String> {
     }
     let mut t = Table::new();
     t.load_preset(UTF8_FULL_CONDENSED);
-    t.set_header(vec!["State", "Name", "Location", "Admin", "Command"]);
+    t.set_header(vec![
+        "State", "Name", "Impact", "Location", "Admin", "Command",
+    ]);
     for e in &entries {
         t.add_row(vec![
             Cell::new(if e.enabled { "enabled" } else { "disabled" }),
             Cell::new(&e.name),
+            Cell::new(impact_label(e.impact)),
             Cell::new(&e.location_label),
             Cell::new(if e.requires_admin { "yes" } else { "" }),
-            Cell::new(truncate(&e.command, 70)),
+            Cell::new(truncate(&e.command, 60)),
         ]);
     }
     println!("{t}");
+    let high = entries
+        .iter()
+        .filter(|e| e.impact == BootImpact::High)
+        .count();
     println!(
-        "\n{} entries. Disabling moves an entry to a CleanMaster backup (the program is never \
+        "\n{} entries ({} estimated high-impact). Impact is an estimate from the target program's \
+         size/name. Disabling moves an entry to a CleanMaster backup (the program is never \
          deleted); `clean startup enable <name>` restores it.",
-        entries.len()
+        entries.len(),
+        high
     );
     Ok(())
 }

@@ -59,6 +59,29 @@ impl StartupOrigin {
     }
 }
 
+/// A rough, HONEST estimate of how much an autostart entry slows login. It is
+/// a keyword + file-size heuristic over the resolved target exe, NOT Task
+/// Manager's measured boot time (Windows exposes no public API for that), so
+/// it is always presented as an estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootImpact {
+    High,
+    Medium,
+    Low,
+}
+
+impl BootImpact {
+    /// Stable lowercase id for CSS classes / i18n keys.
+    pub fn id(self) -> &'static str {
+        match self {
+            BootImpact::High => "high",
+            BootImpact::Medium => "medium",
+            BootImpact::Low => "low",
+        }
+    }
+}
+
 /// One autostart entry, enabled or disabled.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartupEntry {
@@ -72,6 +95,81 @@ pub struct StartupEntry {
     /// True when changing this entry needs administrator rights (HKLM /
     /// all-users). Surface it; do not attempt and fail silently.
     pub requires_admin: bool,
+    /// Estimated login-slowdown impact (see [`BootImpact`]).
+    pub impact: BootImpact,
+}
+
+/// Substrings (matched on the target exe's file name, lowercased) that mark a
+/// program as typically heavy at boot: updaters, cloud sync, and known-large
+/// agents. Deliberately conservative - a hit only raises the estimate.
+const HEAVY_KEYWORDS: &[&str] = &[
+    "update",
+    "updater",
+    "sync",
+    "onedrive",
+    "dropbox",
+    "googledrive",
+    "teams",
+    "steam",
+    "epicgames",
+    "adobe",
+    "creativecloud",
+    "acrotray",
+    "docker",
+    "nvcontainer",
+    "spotify",
+    "discord",
+    "skype",
+    "backup",
+    "cloud",
+    "mcafee",
+    "norton",
+];
+
+const BIG_EXE_BYTES: u64 = 40 * 1024 * 1024;
+const SMALL_EXE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Pull the target executable path out of a Run command line. Handles a quoted
+/// path, an unquoted path ending in `.exe`, and the plain first token. Returns
+/// `None` for an empty command. Pure (no I/O), so it is unit-testable anywhere.
+pub fn exe_path_of(command: &str) -> Option<String> {
+    let c = command.trim();
+    if c.is_empty() {
+        return None;
+    }
+    if let Some(rest) = c.strip_prefix('"') {
+        return Some(match rest.find('"') {
+            Some(end) => rest[..end].to_string(),
+            None => rest.to_string(),
+        });
+    }
+    let lower = c.to_lowercase();
+    if let Some(pos) = lower.find(".exe") {
+        return Some(c[..pos + 4].to_string());
+    }
+    let end = c.find(char::is_whitespace).unwrap_or(c.len());
+    Some(c[..end].to_string())
+}
+
+/// Classify an entry's boot impact from its command and (optionally) the size
+/// of its resolved target exe. Pure, so the heuristic is unit-testable without
+/// touching the registry or the filesystem.
+///
+/// A known-heavy keyword or a large binary reads as High; a small binary reads
+/// as Low; everything else (including an unresolvable target) is Medium - the
+/// honest "unknown / typical" bucket.
+pub fn classify_impact(command: &str, exe_size: Option<u64>) -> BootImpact {
+    let name = exe_path_of(command)
+        .map(|p| p.rsplit(['\\', '/']).next().unwrap_or(&p).to_lowercase())
+        .unwrap_or_default();
+    if HEAVY_KEYWORDS.iter().any(|k| name.contains(k)) {
+        return BootImpact::High;
+    }
+    match exe_size {
+        Some(sz) if sz >= BIG_EXE_BYTES => BootImpact::High,
+        Some(sz) if sz < SMALL_EXE_BYTES => BootImpact::Low,
+        _ => BootImpact::Medium,
+    }
 }
 
 // The JSON blob stored per disabled Run value inside the backup registry key.
@@ -182,7 +280,19 @@ mod imp {
         })
     }
 
+    /// Resolve the target exe (expanding %VARS% in REG_EXPAND_SZ commands),
+    /// stat it for a size, and classify the boot impact. A missing/unreadable
+    /// target simply yields a size of `None` (-> Medium), never an error.
+    fn impact_of(command: &str) -> BootImpact {
+        let size = exe_path_of(command)
+            .map(|p| crate::toolbox::expand_env(&p))
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len());
+        classify_impact(command, size)
+    }
+
     fn entry(origin: StartupOrigin, name: String, command: String, enabled: bool) -> StartupEntry {
+        let impact = impact_of(&command);
         StartupEntry {
             name,
             command,
@@ -190,6 +300,7 @@ mod imp {
             location_label: origin.label().to_string(),
             enabled,
             requires_admin: origin.requires_admin(),
+            impact,
         }
     }
 
@@ -496,6 +607,68 @@ mod tests {
     }
 }
 
+// Impact heuristic is pure and platform-independent, so it is tested on every
+// host (the registry-touching tests above are Windows-only).
+#[cfg(test)]
+mod impact_tests {
+    use super::*;
+
+    #[test]
+    fn exe_path_handles_quoted_unquoted_and_args() {
+        assert_eq!(
+            exe_path_of(r#""C:\Program Files\App\app.exe" --run"#).as_deref(),
+            Some(r"C:\Program Files\App\app.exe")
+        );
+        assert_eq!(
+            exe_path_of(r"C:\Tools\thing.exe /background").as_deref(),
+            Some(r"C:\Tools\thing.exe")
+        );
+        assert_eq!(exe_path_of("notepad").as_deref(), Some("notepad"));
+        assert_eq!(exe_path_of("   "), None);
+    }
+
+    #[test]
+    fn heavy_keyword_is_high_regardless_of_size() {
+        // An updater with a tiny stub launcher is still a High-impact entry.
+        assert_eq!(
+            classify_impact(r"C:\App\AppUpdater.exe", Some(100_000)),
+            BootImpact::High
+        );
+        assert_eq!(
+            classify_impact(
+                r#""C:\Users\me\AppData\Local\OneDrive\OneDrive.exe" /background"#,
+                None
+            ),
+            BootImpact::High
+        );
+    }
+
+    #[test]
+    fn big_binary_is_high_and_small_is_low() {
+        assert_eq!(
+            classify_impact(r"C:\App\huge.exe", Some(80 * 1024 * 1024)),
+            BootImpact::High
+        );
+        assert_eq!(
+            classify_impact(r"C:\App\tray.exe", Some(500 * 1024)),
+            BootImpact::Low
+        );
+    }
+
+    #[test]
+    fn unknown_size_no_keyword_is_medium() {
+        assert_eq!(
+            classify_impact(r"C:\App\mystery.exe", None),
+            BootImpact::Medium
+        );
+        // Mid-sized, no keyword -> the "typical" bucket.
+        assert_eq!(
+            classify_impact(r"C:\App\normal.exe", Some(10 * 1024 * 1024)),
+            BootImpact::Medium
+        );
+    }
+}
+
 #[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
@@ -510,6 +683,7 @@ mod tests {
             location_label: "x".into(),
             enabled: true,
             requires_admin: false,
+            impact: BootImpact::Medium,
         };
         assert!(set_enabled(&e, false).is_err());
     }

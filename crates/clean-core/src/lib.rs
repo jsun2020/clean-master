@@ -6,6 +6,7 @@ pub mod appscan;
 pub mod devscan;
 pub mod dupes;
 pub mod error;
+pub mod memory;
 pub mod report;
 pub mod rules;
 pub mod safety;

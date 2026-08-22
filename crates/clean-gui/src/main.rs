@@ -1322,6 +1322,27 @@ async fn reveal_path(path: String) -> Result<(), String> {
     .map_err(|e| format!("reveal task failed: {e}"))?
 }
 
+// ----------------------------------------------------------- memory ------
+
+/// Current physical-memory usage (for the Optimize view's meter).
+#[tauri::command]
+async fn memory_status() -> Result<clean_core::memory::MemStatus, String> {
+    tauri::async_runtime::spawn_blocking(clean_core::memory::status)
+        .await
+        .map_err(|e| format!("memory status task failed: {e}"))
+}
+
+/// Trim working sets (and purge the standby list when elevated), returning the
+/// honest before/after report. Runs off the UI thread - the trim sweeps every
+/// process and can take a second or two.
+#[tauri::command]
+async fn memory_optimize() -> Result<clean_core::memory::TrimOutcome, String> {
+    tauri::async_runtime::spawn_blocking(clean_core::memory::optimize)
+        .await
+        .map_err(|e| format!("memory optimize task failed: {e}"))?
+        .map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------- startup ------
 
 #[derive(Serialize)]
@@ -1332,6 +1353,8 @@ struct StartupEntryDto {
     location: String,
     enabled: bool,
     requires_admin: bool,
+    /// Estimated boot impact id: "high" | "medium" | "low".
+    impact: String,
 }
 
 #[derive(Serialize)]
@@ -1360,6 +1383,7 @@ fn startup_dto(entries: &[StartupEntry]) -> StartupDto {
                 location: e.location_label.clone(),
                 enabled: e.enabled,
                 requires_admin: e.requires_admin,
+                impact: e.impact.id().to_string(),
             })
             .collect(),
     }
@@ -1459,7 +1483,9 @@ fn main() {
             toolbox_cancel,
             toolbox_elevate,
             startup_scan,
-            startup_toggle
+            startup_toggle,
+            memory_status,
+            memory_optimize
         ])
         .run(tauri::generate_context!())
         .expect("error while running Clean Master");

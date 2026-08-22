@@ -3,6 +3,7 @@ mod apply;
 mod dupes_cmd;
 mod fmt;
 mod junk;
+mod mem_cmd;
 mod startup_cmd;
 
 use clap::{Parser, Subcommand};
@@ -100,6 +101,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: StartupCmd,
     },
+    /// Show physical-memory usage, or free up RAM with --run (Windows)
+    Mem {
+        /// Trim process working sets (and purge the standby list when elevated)
+        /// to free RAM, then report the honest before/after. Without this flag,
+        /// `mem` only prints current usage.
+        #[arg(long)]
+        run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -163,6 +172,13 @@ fn main() -> ExitCode {
             StartupCmd::Disable { name } => startup_cmd::disable(&name),
             StartupCmd::Enable { name } => startup_cmd::enable(&name),
         },
+        Cmd::Mem { run } => {
+            if run {
+                mem_cmd::optimize()
+            } else {
+                mem_cmd::status()
+            }
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

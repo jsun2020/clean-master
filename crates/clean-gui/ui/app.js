@@ -169,7 +169,7 @@ let filesTab = "junk";
 
 function showView(v) {
   $("files-tabs").hidden = v !== "files";
-  ["junk", "dupes", "analyze", "dev", "apps", "toolbox", "startup"].forEach((s) => {
+  ["junk", "dupes", "analyze", "dev", "apps", "toolbox", "startup", "optimize"].forEach((s) => {
     $("view-" + s).hidden = v === "files" ? s !== filesTab : s !== v;
   });
   // The app list is cheap to build (registry / bundle listing): scan lazily
@@ -179,6 +179,8 @@ function showView(v) {
   if (v === "toolbox" && !tbReport && !tbLoading) toolboxLoad();
   // Startup: enumerate autostart entries the first time the screen opens.
   if (v === "startup" && !startupReport && !startupScanning) startupScan();
+  // Optimize: read the current memory status the first time the screen opens.
+  if (v === "optimize" && !memStatus) memRefresh();
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -1294,8 +1296,10 @@ function renderStartup() {
   const rep = startupReport;
   if (!rep) return;
   $("startup-summary").hidden = false;
+  const highN = rep.entries.filter((e) => e.impact === "high").length;
   $("startup-summary").textContent =
-    tf("startup_summary", { on: fmtCount(rep.enabled), n: fmtCount(rep.total) });
+    tf("startup_summary", { on: fmtCount(rep.enabled), n: fmtCount(rep.total) }) +
+    (highN ? "  •  " + tf("startup_high", { n: fmtCount(highN) }) : "");
   const anyAdmin = rep.entries.some((e) => e.requires_admin);
   $("startup-admin").hidden = rep.elevated || !anyAdmin;
   if (!rep.entries.length) {
@@ -1308,6 +1312,9 @@ function renderStartup() {
     const admin = e.requires_admin
       ? ' <span class="tag-optin' + (blocked ? " warn" : "") + '">' + t("st_admin") + "</span>"
       : "";
+    const impact =
+      ' <span class="tag-impact impact-' + e.impact + '" title="' + esc(t("st_impact_hint")) +
+      '">' + t("impact_" + e.impact) + "</span>";
     const label = e.enabled ? t("st_disable") : t("st_enable");
     const btn = blocked
       ? '<button class="btn small ghost" disabled title="' + esc(t("st_needs_admin")) + '">' + label + "</button>"
@@ -1316,7 +1323,7 @@ function renderStartup() {
       : '<button class="btn small primary" data-toggle="' + e.index + '" data-enable="1">' + t("st_enable") + "</button>";
     html +=
       '<div class="card startup-row' + (e.enabled ? "" : " off") + '">' +
-      '<div class="rule-detail"><div class="rule-name">' + esc(e.name) + admin +
+      '<div class="rule-detail"><div class="rule-name">' + esc(e.name) + impact + admin +
       (e.enabled ? "" : ' <span class="tag-inuse">' + t("st_off") + "</span>") +
       '</div><div class="rule-base">' + esc(e.location) + "  •  " + esc(e.command) + "</div></div>" +
       btn +
@@ -1351,6 +1358,76 @@ $("btn-startup-elevate").addEventListener("click", async () => {
     toast(String(err), true);
   }
 });
+
+// -------------------------------------------------------------- optimize
+
+let memStatus = null;
+let memBusy = false;
+
+function memRenderMeter(s) {
+  const pct = Math.max(0, Math.min(100, Number(s.percent_used)));
+  const fill = $("mem-fill");
+  fill.style.width = pct + "%";
+  fill.className = "mem-fill" + (pct >= 85 ? " hot" : pct >= 60 ? " warm" : "");
+  $("mem-legend").textContent = tf("mem_legend", {
+    used: fmtBytes(s.used_bytes),
+    total: fmtBytes(s.total_bytes),
+    pct: pct,
+    avail: fmtBytes(s.avail_bytes),
+  });
+}
+
+async function memRefresh() {
+  try {
+    memStatus = await invoke("memory_status");
+    if (!memStatus || Number(memStatus.total_bytes) === 0) {
+      $("mem-legend").textContent = t("mem_unavailable");
+      return;
+    }
+    memRenderMeter(memStatus);
+  } catch (err) {
+    toast(String(err), true);
+  }
+}
+
+async function memFree() {
+  if (memBusy) return;
+  memBusy = true;
+  const btn = $("btn-mem-free");
+  btn.disabled = true;
+  btn.textContent = t("mem_freeing");
+  try {
+    const out = await invoke("memory_optimize");
+    memStatus = out.after;
+    memRenderMeter(out.after);
+    const freed = Number(out.freed_bytes);
+    const freedTxt = freed >= 0 ? fmtBytes(freed) : "-" + fmtBytes(-freed);
+    const standby = out.standby_purged
+      ? t("mem_standby_purged")
+      : out.elevated
+      ? t("mem_standby_none")
+      : t("mem_standby_admin");
+    const r = $("mem-result");
+    r.hidden = false;
+    r.innerHTML =
+      '<div class="mem-freed">' + tf("mem_freed", { n: freedTxt }) + "</div>" +
+      '<div class="mem-detail">' +
+      tf("mem_ba", { before: fmtBytes(out.before.avail_bytes), after: fmtBytes(out.after.avail_bytes) }) +
+      "  •  " + tf("mem_trimmed", { a: out.processes_trimmed, b: out.processes_total }) +
+      "  •  " + standby +
+      "</div>";
+    toast(tf("toast_mem_freed", { n: freedTxt }));
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    memBusy = false;
+    btn.disabled = false;
+    btn.textContent = t("mem_free");
+  }
+}
+
+$("btn-mem-refresh").addEventListener("click", () => memRefresh());
+$("btn-mem-free").addEventListener("click", () => memFree());
 
 // --------------------------------------------------------------- init --
 
