@@ -22,8 +22,15 @@ pub fn list() -> Result<(), String> {
         "State", "Name", "Impact", "Location", "Admin", "Command",
     ]);
     for e in &entries {
+        let state = if !e.enabled {
+            "disabled".to_string()
+        } else if e.delayed {
+            format!("delayed {}s", e.delay_secs)
+        } else {
+            "enabled".to_string()
+        };
         t.add_row(vec![
-            Cell::new(if e.enabled { "enabled" } else { "disabled" }),
+            Cell::new(state),
             Cell::new(&e.name),
             Cell::new(impact_label(e.impact)),
             Cell::new(&e.location_label),
@@ -122,6 +129,73 @@ pub fn enable(name: &str) -> Result<(), String> {
     println!(
         "Enabled '{}' ({}). It will run at the next login.",
         entry.name, entry.location_label
+    );
+    Ok(())
+}
+
+/// Full path to the executable that should act as the delayed-start shim.
+/// Prefer a sibling `clean-master.exe` (GUI subsystem - no console flash at
+/// login); fall back to this executable.
+fn launcher_exe() -> String {
+    let cur = std::env::current_exe().unwrap_or_default();
+    if let Some(dir) = cur.parent() {
+        let gui = dir.join("clean-master.exe");
+        if gui.exists() {
+            return gui.display().to_string();
+        }
+    }
+    cur.display().to_string()
+}
+
+/// `clean startup delay <name> [--secs N]`
+pub fn delay(name: &str, secs: u32) -> Result<(), String> {
+    let entries = startup::list();
+    let matches: Vec<&StartupEntry> = entries
+        .iter()
+        .filter(|e| e.name.eq_ignore_ascii_case(name) && e.enabled && !e.delayed)
+        .collect();
+    let entry = match matches.len() {
+        0 => {
+            return Err(format!(
+                "no enabled, non-delayed startup entry named '{name}'. Run `clean startup list`."
+            ))
+        }
+        1 => matches[0],
+        _ => {
+            return Err(format!(
+                "'{name}' matches multiple entries. This CLI acts on unique names; use the GUI."
+            ))
+        }
+    };
+    startup::delay(entry, secs, &launcher_exe()).map_err(|e| e.to_string())?;
+    println!(
+        "Delayed '{}' by {secs}s. It will start {secs}s after login instead of immediately. \
+         Undo with `clean startup undelay {}`.",
+        entry.name, entry.name
+    );
+    Ok(())
+}
+
+/// `clean startup undelay <name>`
+pub fn undelay(name: &str) -> Result<(), String> {
+    let entries = startup::list();
+    let matches: Vec<&StartupEntry> = entries
+        .iter()
+        .filter(|e| e.name.eq_ignore_ascii_case(name) && e.delayed)
+        .collect();
+    let entry = match matches.len() {
+        0 => return Err(format!("no delayed startup entry named '{name}'.")),
+        1 => matches[0],
+        _ => {
+            return Err(format!(
+                "'{name}' matches multiple entries. This CLI acts on unique names; use the GUI."
+            ))
+        }
+    };
+    startup::undelay(entry).map_err(|e| e.to_string())?;
+    println!(
+        "Removed the delay on '{}'. It will start immediately at the next login.",
+        entry.name
     );
     Ok(())
 }

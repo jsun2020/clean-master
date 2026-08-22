@@ -97,6 +97,12 @@ pub struct StartupEntry {
     pub requires_admin: bool,
     /// Estimated login-slowdown impact (see [`BootImpact`]).
     pub impact: BootImpact,
+    /// True when this entry has been delayed: its Run value now launches a
+    /// Clean Master shim that waits `delay_secs` before starting the original
+    /// program. `command` still reflects the ORIGINAL program, not the shim.
+    pub delayed: bool,
+    /// Seconds the launch is delayed after login (0 when not delayed).
+    pub delay_secs: u32,
 }
 
 /// Substrings (matched on the target exe's file name, lowercased) that mark a
@@ -172,6 +178,49 @@ pub fn classify_impact(command: &str, exe_size: Option<u64>) -> BootImpact {
     }
 }
 
+/// The flag Clean Master's delayed-start shim is invoked with:
+/// `"<clean-master.exe>" --delayed-start <id>`. Kept public so the binaries
+/// can recognize it in their argv before their normal startup.
+pub const DELAYED_START_FLAG: &str = "--delayed-start";
+
+/// Split a Run command line into (exe, arguments). Mirrors [`exe_path_of`] for
+/// the exe half; the arguments are whatever follows, trimmed. Pure.
+pub fn split_command(command: &str) -> (String, String) {
+    let c = command.trim();
+    if let Some(rest) = c.strip_prefix('"') {
+        return match rest.find('"') {
+            Some(end) => (rest[..end].to_string(), rest[end + 1..].trim().to_string()),
+            None => (rest.to_string(), String::new()),
+        };
+    }
+    let lower = c.to_lowercase();
+    if let Some(pos) = lower.find(".exe") {
+        return (c[..pos + 4].to_string(), c[pos + 4..].trim().to_string());
+    }
+    let end = c.find(char::is_whitespace).unwrap_or(c.len());
+    (c[..end].to_string(), c[end..].trim().to_string())
+}
+
+/// Lowercase hex of a string's bytes - a command-line-safe, single-token id
+/// derived from an entry's origin+name for the delayed-start backup store.
+pub fn hex_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        out.push(char::from_digit((b >> 4) as u32, 16).unwrap());
+        out.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+    }
+    out
+}
+
+/// If `command` is a Clean Master delayed-start shim invocation, return its id
+/// token (the argument after [`DELAYED_START_FLAG`]). Pure.
+pub fn parse_launcher_id(command: &str) -> Option<String> {
+    let idx = command.find(DELAYED_START_FLAG)?;
+    let rest = command[idx + DELAYED_START_FLAG.len()..].trim_start();
+    let tok = rest.split_whitespace().next()?;
+    (!tok.is_empty()).then(|| tok.to_string())
+}
+
 // The JSON blob stored per disabled Run value inside the backup registry key.
 #[cfg(windows)]
 #[derive(Serialize, Deserialize)]
@@ -198,6 +247,38 @@ mod imp {
     const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const RUN_WOW_SUBKEY: &str = r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Run";
     const BACKUP_SUBKEY: &str = r"Software\CleanMaster\DisabledStartup";
+    // Delayed entries: the ORIGINAL command is parked here (keyed by a hex id
+    // derived from origin+name), while the live Run value points at our shim.
+    const DELAYED_SUBKEY: &str = r"Software\CleanMaster\DelayedStartup";
+
+    /// The record kept for a delayed entry: enough to run the original program
+    /// after the wait, and to restore the exact original Run value on undelay.
+    #[derive(Serialize, Deserialize)]
+    struct DelayedBlob {
+        origin: StartupOrigin,
+        name: String,
+        command: String,
+        /// Original value was REG_EXPAND_SZ (restore it as such).
+        expand: bool,
+        delay_secs: u32,
+    }
+
+    fn launcher_id(origin: StartupOrigin, name: &str) -> String {
+        hex_encode(&backup_id(origin, name))
+    }
+
+    fn launcher_command(launcher_exe: &str, id: &str) -> String {
+        format!("\"{launcher_exe}\" {DELAYED_START_FLAG} {id}")
+    }
+
+    fn read_delayed_blob(id: &str) -> Option<DelayedBlob> {
+        let store = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(DELAYED_SUBKEY, KEY_READ)
+            .ok()?;
+        let raw = store.get_raw_value(id).ok()?;
+        let json = reg_value_to_string(&raw)?;
+        serde_json::from_str(&json).ok()
+    }
 
     fn origin_key(origin: StartupOrigin) -> Option<(RegKey, &'static str)> {
         match origin {
@@ -301,6 +382,8 @@ mod imp {
             enabled,
             requires_admin: origin.requires_admin(),
             impact,
+            delayed: false,
+            delay_secs: 0,
         }
     }
 
@@ -313,7 +396,16 @@ mod imp {
         };
         for (name, val) in key.enum_values().filter_map(Result::ok) {
             if let Some(cmd) = reg_value_to_string(&val) {
-                out.push(entry(origin, name, cmd, true));
+                // A value pointing at our shim is a DELAYED entry: show the
+                // original program (from the backup blob), not the shim line.
+                if let Some(blob) = parse_launcher_id(&cmd).and_then(|id| read_delayed_blob(&id)) {
+                    let mut e = entry(origin, name, blob.command, true);
+                    e.delayed = true;
+                    e.delay_secs = blob.delay_secs;
+                    out.push(e);
+                } else {
+                    out.push(entry(origin, name, cmd, true));
+                }
             }
         }
     }
@@ -476,12 +568,125 @@ mod imp {
         if entry.enabled == enabled {
             return Ok(());
         }
+        if entry.delayed {
+            return Err(CoreError::Session(
+                "this entry is delayed - remove the delay first, then disable it".into(),
+            ));
+        }
         match (entry.origin.is_registry(), enabled) {
             (true, false) => disable_registry(entry),
             (true, true) => enable_registry(entry),
             (false, false) => disable_folder(entry),
             (false, true) => enable_folder(entry),
         }
+    }
+
+    /// Delay an enabled HKCU Run entry: park the original command in the
+    /// delayed-start store and repoint its Run value at our shim, which waits
+    /// `delay_secs` after login before launching the original. Reversible via
+    /// [`undelay`]; needs no admin and no Task Scheduler.
+    pub fn delay(
+        entry: &StartupEntry,
+        delay_secs: u32,
+        launcher_exe: &str,
+    ) -> Result<(), CoreError> {
+        if entry.origin != StartupOrigin::RunCurrentUser {
+            return Err(CoreError::Session(
+                "delayed start is only supported for this user's startup entries (HKCU)".into(),
+            ));
+        }
+        if entry.delayed {
+            return Err(CoreError::Session("entry is already delayed".into()));
+        }
+        if !entry.enabled {
+            return Err(CoreError::Session(
+                "enable the entry before delaying it".into(),
+            ));
+        }
+        let (root, sub) = origin_key(entry.origin)
+            .ok_or_else(|| CoreError::Session("not a registry startup entry".into()))?;
+        let key = root
+            .open_subkey_with_flags(sub, KEY_READ | KEY_SET_VALUE)
+            .map_err(|e| io_err(sub.into(), e))?;
+        let raw = key
+            .get_raw_value(&entry.name)
+            .map_err(|e| io_err(entry.name.clone(), e))?;
+        let command = reg_value_to_string(&raw).unwrap_or_else(|| entry.command.clone());
+        if parse_launcher_id(&command).is_some() {
+            return Err(CoreError::Session("entry is already delayed".into()));
+        }
+        let blob = DelayedBlob {
+            origin: entry.origin,
+            name: entry.name.clone(),
+            command,
+            expand: raw.vtype == REG_EXPAND_SZ,
+            delay_secs,
+        };
+        let id = launcher_id(entry.origin, &entry.name);
+        let (store, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(DELAYED_SUBKEY)
+            .map_err(|e| io_err(DELAYED_SUBKEY.into(), e))?;
+        let json = serde_json::to_string(&blob)
+            .map_err(|e| CoreError::Session(format!("serialize delayed entry: {e}")))?;
+        store
+            .set_raw_value(&id, &sz_value(&json))
+            .map_err(|e| io_err("delayed backup value".into(), e))?;
+        // Repoint the live Run value at the shim. If that write fails, roll the
+        // backup back so we never leave a half-applied state.
+        let launcher = launcher_command(launcher_exe, &id);
+        if let Err(e) = key.set_raw_value(&entry.name, &sz_value(&launcher)) {
+            let _ = store.delete_value(&id);
+            return Err(io_err(entry.name.clone(), e));
+        }
+        Ok(())
+    }
+
+    /// Remove a delay: restore the original Run value (exact command + type)
+    /// and drop the shim + backup blob.
+    pub fn undelay(entry: &StartupEntry) -> Result<(), CoreError> {
+        let id = launcher_id(entry.origin, &entry.name);
+        let store = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey_with_flags(DELAYED_SUBKEY, KEY_READ | KEY_SET_VALUE)
+            .map_err(|e| io_err(DELAYED_SUBKEY.into(), e))?;
+        let raw = store
+            .get_raw_value(&id)
+            .map_err(|e| io_err(id.clone(), e))?;
+        let json = reg_value_to_string(&raw)
+            .ok_or_else(|| CoreError::Session("corrupt delayed entry".into()))?;
+        let blob: DelayedBlob = serde_json::from_str(&json)
+            .map_err(|e| CoreError::Session(format!("parse delayed entry: {e}")))?;
+        let (root, sub) = origin_key(blob.origin)
+            .ok_or_else(|| CoreError::Session("not a registry startup entry".into()))?;
+        let (key, _) = root.create_subkey(sub).map_err(|e| io_err(sub.into(), e))?;
+        let value = if blob.expand {
+            expand_sz_value(&blob.command)
+        } else {
+            sz_value(&blob.command)
+        };
+        key.set_raw_value(&blob.name, &value)
+            .map_err(|e| io_err(blob.name.clone(), e))?;
+        store.delete_value(&id).map_err(|e| io_err(id, e))?;
+        Ok(())
+    }
+
+    /// The shim body: called by the binary when launched as
+    /// `--delayed-start <id>`. Waits, then starts the original program. Blocks
+    /// for the delay, so callers should run it and exit.
+    pub fn run_delayed_start(id: &str) -> Result<(), CoreError> {
+        use std::os::windows::process::CommandExt;
+        let blob = read_delayed_blob(id)
+            .ok_or_else(|| CoreError::Session("no such delayed entry".into()))?;
+        std::thread::sleep(std::time::Duration::from_secs(blob.delay_secs as u64));
+        let expanded = crate::toolbox::expand_env(&blob.command);
+        let (exe, args) = split_command(&expanded);
+        let mut cmd = std::process::Command::new(&exe);
+        if !args.is_empty() {
+            // Append the original arguments verbatim (preserving their quoting)
+            // rather than re-splitting/re-quoting them.
+            cmd.raw_arg(&args);
+        }
+        cmd.spawn().map_err(|e| io_err(exe, e))?;
+        Ok(())
     }
 
     // Test hooks: exercise the registry move mechanism against a scratch key
@@ -556,6 +761,24 @@ mod imp {
             "startup management is only available on Windows".into(),
         ))
     }
+
+    pub fn delay(_entry: &StartupEntry, _secs: u32, _launcher_exe: &str) -> Result<(), CoreError> {
+        Err(CoreError::Session(
+            "delayed start is only available on Windows".into(),
+        ))
+    }
+
+    pub fn undelay(_entry: &StartupEntry) -> Result<(), CoreError> {
+        Err(CoreError::Session(
+            "delayed start is only available on Windows".into(),
+        ))
+    }
+
+    pub fn run_delayed_start(_id: &str) -> Result<(), CoreError> {
+        Err(CoreError::Session(
+            "delayed start is only available on Windows".into(),
+        ))
+    }
 }
 
 /// All autostart entries (Run keys + Startup folders), enabled and disabled,
@@ -569,6 +792,26 @@ pub fn list() -> Vec<StartupEntry> {
 /// A no-op when the entry is already in the requested state.
 pub fn set_enabled(entry: &StartupEntry, enabled: bool) -> Result<(), CoreError> {
     imp::set_enabled(entry, enabled)
+}
+
+/// Delay an enabled HKCU startup entry by `delay_secs` seconds. `launcher_exe`
+/// is the full path to the Clean Master executable that will act as the wait
+/// shim (prefer the GUI exe, which shows no console). Reversible via [`undelay`];
+/// needs no admin. Errors for non-HKCU, disabled, or already-delayed entries.
+pub fn delay(entry: &StartupEntry, delay_secs: u32, launcher_exe: &str) -> Result<(), CoreError> {
+    imp::delay(entry, delay_secs, launcher_exe)
+}
+
+/// Remove a delay, restoring the original immediate Run value.
+pub fn undelay(entry: &StartupEntry) -> Result<(), CoreError> {
+    imp::undelay(entry)
+}
+
+/// Shim entry point: run the delayed program for backup id `id` after its
+/// configured wait. Called by the binaries when invoked with
+/// [`DELAYED_START_FLAG`]; blocks for the delay, so run it and exit.
+pub fn run_delayed_start(id: &str) -> Result<(), CoreError> {
+    imp::run_delayed_start(id)
 }
 
 #[cfg(all(test, windows))]
@@ -667,6 +910,43 @@ mod impact_tests {
             BootImpact::Medium
         );
     }
+
+    #[test]
+    fn split_command_separates_exe_and_args() {
+        assert_eq!(
+            split_command(r#""C:\Program Files\App\app.exe" --run -x"#),
+            (
+                r"C:\Program Files\App\app.exe".to_string(),
+                "--run -x".to_string()
+            )
+        );
+        assert_eq!(
+            split_command(r"C:\Tools\thing.exe /background"),
+            (r"C:\Tools\thing.exe".to_string(), "/background".to_string())
+        );
+        assert_eq!(
+            split_command(r"C:\Tools\thing.exe"),
+            (r"C:\Tools\thing.exe".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn launcher_id_roundtrips_through_parse() {
+        // The shim command we write must be parseable back to the same id, and
+        // the id must be a single command-line-safe token (hex).
+        let id = hex_encode("RunCurrentUser|Some App With Spaces");
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        let cmd = format!(
+            "\"C:\\Program Files\\Clean Master\\clean-master.exe\" {DELAYED_START_FLAG} {id}"
+        );
+        assert_eq!(parse_launcher_id(&cmd).as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn parse_launcher_id_ignores_ordinary_commands() {
+        assert_eq!(parse_launcher_id(r#""C:\App\app.exe" --run"#), None);
+        assert_eq!(parse_launcher_id(""), None);
+    }
 }
 
 #[cfg(all(test, not(windows)))]
@@ -684,7 +964,12 @@ mod tests {
             enabled: true,
             requires_admin: false,
             impact: BootImpact::Medium,
+            delayed: false,
+            delay_secs: 0,
         };
         assert!(set_enabled(&e, false).is_err());
+        assert!(delay(&e, 60, "clean-master.exe").is_err());
+        assert!(undelay(&e).is_err());
+        assert!(run_delayed_start("00").is_err());
     }
 }

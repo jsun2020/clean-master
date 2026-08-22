@@ -1355,6 +1355,12 @@ struct StartupEntryDto {
     requires_admin: bool,
     /// Estimated boot impact id: "high" | "medium" | "low".
     impact: String,
+    /// True when the entry is delayed (starts N seconds after login).
+    delayed: bool,
+    delay_secs: u32,
+    /// Whether this entry can be delayed (enabled HKCU Run entry, not already
+    /// delayed) - the frontend only shows the delay control when true.
+    can_delay: bool,
 }
 
 #[derive(Serialize)]
@@ -1384,6 +1390,11 @@ fn startup_dto(entries: &[StartupEntry]) -> StartupDto {
                 enabled: e.enabled,
                 requires_admin: e.requires_admin,
                 impact: e.impact.id().to_string(),
+                delayed: e.delayed,
+                delay_secs: e.delay_secs,
+                can_delay: e.enabled
+                    && !e.delayed
+                    && e.origin == clean_core::startup::StartupOrigin::RunCurrentUser,
             })
             .collect(),
     }
@@ -1434,6 +1445,58 @@ async fn startup_toggle(
     Ok(dto)
 }
 
+/// Delay one entry by `secs` seconds (re-derived by index from server state).
+/// The shim is THIS executable (clean-master.exe - GUI subsystem, no console).
+#[tauri::command]
+async fn startup_delay(
+    state: State<'_, AppState>,
+    index: usize,
+    secs: u32,
+) -> Result<StartupDto, String> {
+    let entry = {
+        let entries = state.startup.lock().map_err(|_| "state lock poisoned")?;
+        entries
+            .get(index)
+            .cloned()
+            .ok_or("No such entry. Rescan first.")?
+    };
+    let launcher = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("cannot resolve this executable's path: {e}"))?;
+    // Clamp to a sane window (5s .. 30min) so the UI can't request absurd waits.
+    let secs = secs.clamp(5, 1800);
+    let refreshed = tauri::async_runtime::spawn_blocking(move || {
+        startup::delay(&entry, secs, &launcher).map(|_| startup::list())
+    })
+    .await
+    .map_err(|e| format!("startup delay task failed: {e}"))?
+    .map_err(|e| e.to_string())?;
+    let dto = startup_dto(&refreshed);
+    *state.startup.lock().map_err(|_| "state lock poisoned")? = refreshed;
+    Ok(dto)
+}
+
+/// Remove an entry's delay, restoring immediate start.
+#[tauri::command]
+async fn startup_undelay(state: State<'_, AppState>, index: usize) -> Result<StartupDto, String> {
+    let entry = {
+        let entries = state.startup.lock().map_err(|_| "state lock poisoned")?;
+        entries
+            .get(index)
+            .cloned()
+            .ok_or("No such entry. Rescan first.")?
+    };
+    let refreshed = tauri::async_runtime::spawn_blocking(move || {
+        startup::undelay(&entry).map(|_| startup::list())
+    })
+    .await
+    .map_err(|e| format!("startup undelay task failed: {e}"))?
+    .map_err(|e| e.to_string())?;
+    let dto = startup_dto(&refreshed);
+    *state.startup.lock().map_err(|_| "state lock poisoned")? = refreshed;
+    Ok(dto)
+}
+
 #[tauri::command]
 async fn pick_folder() -> Result<Option<String>, String> {
     // E2E seam: native dialogs cannot be automated, so tests preselect the
@@ -1458,6 +1521,18 @@ fn main() {
     // be gone before this one creates its window, or WebView2 refuses to
     // share the user-data folder across integrity levels.
     let args: Vec<String> = std::env::args().collect();
+    // Delayed-start shim: a delayed Run entry launches us as
+    // `clean-master.exe --delayed-start <id>`. Wait, start the original program,
+    // and exit BEFORE creating any window (GUI subsystem = no console flash).
+    if let Some(pos) = args
+        .iter()
+        .position(|a| a == clean_core::startup::DELAYED_START_FLAG)
+    {
+        if let Some(id) = args.get(pos + 1) {
+            let _ = clean_core::startup::run_delayed_start(id);
+        }
+        return;
+    }
     if let Some(pid) = toolbox::wait_for_pid_arg(&args) {
         toolbox::wait_for_pid_exit(pid, 15_000);
     }
@@ -1484,6 +1559,8 @@ fn main() {
             toolbox_elevate,
             startup_scan,
             startup_toggle,
+            startup_delay,
+            startup_undelay,
             memory_status,
             memory_optimize
         ])

@@ -1316,17 +1316,39 @@ function renderStartup() {
       ' <span class="tag-impact impact-' + e.impact + '" title="' + esc(t("st_impact_hint")) +
       '">' + t("impact_" + e.impact) + "</span>";
     const label = e.enabled ? t("st_disable") : t("st_enable");
-    const btn = blocked
-      ? '<button class="btn small ghost" disabled title="' + esc(t("st_needs_admin")) + '">' + label + "</button>"
-      : e.enabled
-      ? '<button class="btn small ghost" data-toggle="' + e.index + '" data-enable="0">' + t("st_disable") + "</button>"
-      : '<button class="btn small primary" data-toggle="' + e.index + '" data-enable="1">' + t("st_enable") + "</button>";
+    // A delay control (select) for eligible immediate HKCU entries.
+    const delaySel = e.can_delay
+      ? '<select class="delay-select" data-delay="' + e.index + '" title="' + esc(t("st_delay_hint")) + '">' +
+        '<option value="">' + t("st_delay") + "</option>" +
+        '<option value="30">30s</option>' +
+        '<option value="60">1m</option>' +
+        '<option value="120">2m</option>' +
+        '<option value="300">5m</option>' +
+        "</select>"
+      : "";
+    let controls;
+    if (e.delayed) {
+      // Delayed: show the wait + a Remove-delay action (disable it via undelay first).
+      controls =
+        '<span class="tag-delay">' + tf("st_delayed", { n: e.delay_secs }) + "</span>" +
+        '<button class="btn small ghost" data-undelay="' + e.index + '">' + t("st_undelay") + "</button>";
+    } else if (blocked) {
+      controls =
+        '<button class="btn small ghost" disabled title="' + esc(t("st_needs_admin")) + '">' + label + "</button>";
+    } else if (e.enabled) {
+      controls =
+        '<button class="btn small ghost" data-toggle="' + e.index + '" data-enable="0">' + t("st_disable") + "</button>" +
+        delaySel;
+    } else {
+      controls =
+        '<button class="btn small primary" data-toggle="' + e.index + '" data-enable="1">' + t("st_enable") + "</button>";
+    }
     html +=
       '<div class="card startup-row' + (e.enabled ? "" : " off") + '">' +
       '<div class="rule-detail"><div class="rule-name">' + esc(e.name) + impact + admin +
       (e.enabled ? "" : ' <span class="tag-inuse">' + t("st_off") + "</span>") +
       '</div><div class="rule-base">' + esc(e.location) + "  •  " + esc(e.command) + "</div></div>" +
-      btn +
+      '<div class="startup-controls">' + controls + "</div>" +
       "</div>";
   }
   $("startup-list").innerHTML = html;
@@ -1334,6 +1356,35 @@ function renderStartup() {
     b.addEventListener("click", () =>
       startupToggle(Number(b.dataset.toggle), b.dataset.enable === "1"));
   });
+  document.querySelectorAll("#startup-list [data-undelay]").forEach((b) => {
+    b.addEventListener("click", () => startupUndelay(Number(b.dataset.undelay)));
+  });
+  document.querySelectorAll("#startup-list [data-delay]").forEach((s) => {
+    s.addEventListener("change", () => {
+      const secs = Number(s.value);
+      if (secs > 0) startupDelay(Number(s.dataset.delay), secs);
+    });
+  });
+}
+
+async function startupDelay(index, secs) {
+  try {
+    startupReport = await invoke("startup_delay", { index, secs });
+    renderStartup();
+    toast(tf("toast_startup_delayed", { n: secs }));
+  } catch (err) {
+    toast(String(err), true);
+  }
+}
+
+async function startupUndelay(index) {
+  try {
+    startupReport = await invoke("startup_undelay", { index });
+    renderStartup();
+    toast(t("toast_startup_undelayed"));
+  } catch (err) {
+    toast(String(err), true);
+  }
 }
 
 async function startupToggle(index, enable) {
