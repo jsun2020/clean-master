@@ -3,6 +3,7 @@ mod apply;
 mod dupes_cmd;
 mod fmt;
 mod junk;
+mod mem_cmd;
 mod startup_cmd;
 
 use clap::{Parser, Subcommand};
@@ -100,6 +101,14 @@ enum Cmd {
         #[command(subcommand)]
         cmd: StartupCmd,
     },
+    /// Show physical-memory usage, or free up RAM with --run (Windows)
+    Mem {
+        /// Trim process working sets (and purge the standby list when elevated)
+        /// to free RAM, then report the honest before/after. Without this flag,
+        /// `mem` only prints current usage.
+        #[arg(long)]
+        run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -116,6 +125,19 @@ enum StartupCmd {
         /// Entry name from `clean startup list`
         name: String,
     },
+    /// Delay an entry so it starts N seconds after login (HKCU entries only)
+    Delay {
+        /// Entry name from `clean startup list`
+        name: String,
+        /// Seconds to wait after login before starting the program
+        #[arg(long, default_value_t = 60)]
+        secs: u32,
+    },
+    /// Remove a delay, restoring immediate start at login
+    Undelay {
+        /// Entry name from `clean startup list`
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -125,6 +147,20 @@ enum RulesCmd {
 }
 
 fn main() -> ExitCode {
+    // Delayed-start shim: when Explorer launches a delayed Run entry, it runs
+    // `clean --delayed-start <id>`. Wait, start the original program, and exit
+    // before clap ever sees these args. (The GUI exe is the preferred shim -
+    // no console - but the CLI honours the same contract.)
+    let raw: Vec<String> = std::env::args().collect();
+    if let Some(pos) = raw
+        .iter()
+        .position(|a| a == clean_core::startup::DELAYED_START_FLAG)
+    {
+        if let Some(id) = raw.get(pos + 1) {
+            let _ = clean_core::startup::run_delayed_start(id);
+        }
+        return ExitCode::SUCCESS;
+    }
     let cli = Cli::parse();
     let result = match cli.cmd {
         Cmd::Scan {
@@ -162,7 +198,16 @@ fn main() -> ExitCode {
             StartupCmd::List => startup_cmd::list(),
             StartupCmd::Disable { name } => startup_cmd::disable(&name),
             StartupCmd::Enable { name } => startup_cmd::enable(&name),
+            StartupCmd::Delay { name, secs } => startup_cmd::delay(&name, secs),
+            StartupCmd::Undelay { name } => startup_cmd::undelay(&name),
         },
+        Cmd::Mem { run } => {
+            if run {
+                mem_cmd::optimize()
+            } else {
+                mem_cmd::status()
+            }
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

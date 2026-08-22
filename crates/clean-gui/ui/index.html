@@ -47,6 +47,10 @@
         <svg viewBox="0 0 20 20"><path d="M10 3v6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6 5.5a6 6 0 1 0 8 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         <span data-i18n="nav_startup">Startup</span>
       </button>
+      <button class="nav-item" data-view="optimize">
+        <svg viewBox="0 0 20 20"><path d="M11 2L4 11h5l-1 7 7-9h-5l1-7z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <span data-i18n="nav_optimize">Optimize</span>
+      </button>
     </nav>
 
     <div class="side-foot">
@@ -276,6 +280,30 @@
       <div class="summary-strip" id="startup-summary" hidden></div>
 
       <div class="cards" id="startup-list"></div>
+    </section>
+
+    <section class="view" id="view-optimize" hidden>
+      <header class="head">
+        <div>
+          <h1 class="hero-num" data-i18n="mem_title">Optimize</h1>
+          <p class="hero-sub" data-i18n="mem_sub">Free up RAM by trimming the working sets of running programs (and, when running as administrator, purging the standby cache). This is a one-off manual trim - not a background "booster" - and the reclaimed memory is temporary: Windows pages it back in as programs need it.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn ghost" id="btn-mem-refresh" data-i18n="refresh">Refresh</button>
+        </div>
+      </header>
+
+      <div class="mem-panel">
+        <div class="mem-meter">
+          <div class="mem-bar"><div class="mem-fill" id="mem-fill"></div></div>
+          <div class="mem-legend" id="mem-legend"></div>
+        </div>
+        <div class="mem-actions">
+          <button class="btn primary" id="btn-mem-free" data-i18n="mem_free">Free up memory</button>
+        </div>
+        <div class="mem-result" id="mem-result" hidden></div>
+        <p class="hint" data-i18n="mem_caveat">Tip: trimming working sets frees RAM now, but it is not a performance boost - a program you use next simply loads its pages back. Use it before a heavy task, not on a timer.</p>
+      </div>
     </section>
 
   </main>

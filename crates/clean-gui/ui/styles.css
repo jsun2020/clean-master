@@ -504,3 +504,55 @@ button:focus-visible, .chk input:focus-visible + .box { outline: 2px solid var(-
 .an-fresh.stale {
   color: var(--amber);
 }
+
+/* ---- startup boot-impact badges ---- */
+.tag-impact {
+  font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase;
+  border: 1.4px solid var(--line); border-radius: 20px;
+  padding: 1px 7px; margin-left: 6px; white-space: nowrap;
+}
+.tag-impact.impact-high { color: var(--red); border-color: #e3b0ab; background: #fbeeed; }
+.tag-impact.impact-medium { color: var(--amber); border-color: #e6c583; background: #fdf6e8; }
+.tag-impact.impact-low { color: var(--emerald); border-color: #b9e0cf; background: var(--emerald-soft); }
+
+/* ---- Optimize (memory) view ---- */
+.mem-panel {
+  background: var(--card); border: 1px solid var(--line); border-radius: 13px;
+  box-shadow: var(--shadow); padding: 22px; max-width: 640px;
+}
+.mem-meter { margin-bottom: 18px; }
+.mem-bar {
+  height: 16px; border-radius: 20px; background: var(--emerald-soft);
+  overflow: hidden; border: 1px solid var(--line);
+}
+.mem-fill {
+  height: 100%; width: 0; border-radius: 20px 0 0 20px;
+  background: var(--emerald); transition: width .35s ease;
+}
+.mem-fill.warm { background: var(--amber); }
+.mem-fill.hot { background: var(--red); }
+.mem-legend {
+  margin-top: 8px; font-family: var(--mono); font-size: 12.5px; color: var(--ink-2);
+}
+.mem-actions { margin: 4px 0 14px; }
+.mem-result {
+  border-top: 1px solid var(--line); padding-top: 14px; margin-bottom: 12px;
+}
+.mem-freed {
+  font-family: var(--mono); font-size: 20px; font-weight: 700; color: var(--emerald);
+}
+.mem-detail { margin-top: 4px; font-size: 12.5px; color: var(--ink-2); }
+
+/* ---- startup delayed-start controls ---- */
+.startup-controls { display: flex; align-items: center; gap: 8px; flex: none; }
+.tag-delay {
+  font-size: 10px; font-weight: 800; letter-spacing: .5px; text-transform: uppercase;
+  color: var(--emerald); border: 1.4px solid #b9e0cf; background: var(--emerald-soft);
+  border-radius: 20px; padding: 2px 8px; white-space: nowrap;
+}
+.delay-select {
+  font-family: var(--sans); font-size: 12px; color: var(--ink-2);
+  background: var(--card); border: 1px solid var(--line); border-radius: 7px;
+  padding: 5px 8px; cursor: pointer;
+}
+.delay-select:hover { border-color: var(--ink-3); }
