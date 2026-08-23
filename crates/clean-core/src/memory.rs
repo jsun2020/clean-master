@@ -27,6 +27,10 @@ pub struct MemStatus {
 }
 
 impl MemStatus {
+    /// Only the Windows implementation reads real numbers; the non-Windows
+    /// stub builds zeros directly, so this is Windows-only to keep
+    /// cross-target clippy (dead_code) clean.
+    #[cfg(windows)]
     fn from_total_avail(total: u64, avail: u64, load: u32) -> MemStatus {
         MemStatus {
             total_bytes: total,
