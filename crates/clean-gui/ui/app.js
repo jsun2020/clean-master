@@ -870,14 +870,57 @@ $("btn-dev-clean").addEventListener("click", async () => {
     const res = await invoke("dev_apply", { artifactIndexes: [...devChecked], permanent });
     showApplyResult(res, "noun_folders", permanent);
     refreshUndo();
-    $("dev-projects").innerHTML = '<div class="hint">' + t("dev_done") + '</div>';
-    $("dev-summary").hidden = true;
-    $("dev-toolbar").hidden = true;
-    $("dev-applybar").hidden = true;
+    devPruneDeleted(res.deleted_paths);
   } catch (err) {
     toast(String(err), true);
   } finally { busyHide(); }
 });
+
+/* After a delete, drop exactly the folders the backend confirmed removed
+   and re-render in place, so the user keeps the scan results and can pick
+   more folders without rescanning. Failed folders (held open by a running
+   app) stay listed AND stay selected for a retry - only confirmed paths
+   are pruned, never the whole selection. */
+function devPruneDeleted(deletedPaths) {
+  if (!Array.isArray(deletedPaths)) {
+    // Backend without deleted_paths: fall back to the old wipe.
+    deletedPaths = null;
+  }
+  const gone = new Set(deletedPaths || []);
+  const projects = [];
+  if (deletedPaths) {
+    for (const p of devReport.projects) {
+      const kept = [];
+      for (const a of p.artifacts) {
+        if (gone.has(a.path)) {
+          devReport.artifact_count -= 1;
+          devReport.total_bytes -= a.bytes;
+          devChecked.delete(a.index);
+        } else {
+          kept.push(a);
+        }
+      }
+      if (kept.length) {
+        p.artifacts = kept;
+        p.total_bytes = kept.reduce((s, a) => s + a.bytes, 0);
+        projects.push(p);
+      } else {
+        devReport.project_count -= 1;
+      }
+    }
+    devReport.projects = projects;
+  }
+  if (!deletedPaths || !projects.length) {
+    // Nothing left to show (or legacy backend): the "done" hint, not the
+    // misleading "no build folders found under root" message.
+    $("dev-projects").innerHTML = '<div class="hint">' + t("dev_done") + '</div>';
+    $("dev-summary").hidden = true;
+    $("dev-toolbar").hidden = true;
+    $("dev-applybar").hidden = true;
+    return;
+  }
+  renderDev();
+}
 
 // --------------------------------------------------------------- apps --
 

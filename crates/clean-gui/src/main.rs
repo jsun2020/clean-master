@@ -132,6 +132,11 @@ struct ApplyDto {
     /// "reclaimable now" headline. Empty for duplicates.
     blocked_rules: Vec<String>,
     manifest: Option<String>,
+    /// Full paths confirmed removed (dev apply only; junk/dupes touch
+    /// thousands of files and their UIs rescan instead). Lets the dev
+    /// screen prune deleted rows in place while failed folders - locked
+    /// by a running build - stay listed and selected for retry.
+    deleted_paths: Vec<String>,
 }
 
 /// Explain failures: which running apps hold the files that would not move.
@@ -376,6 +381,7 @@ async fn junk_apply(
         holders,
         blocked_rules,
         manifest,
+        deleted_paths: Vec::new(),
     })
 }
 
@@ -515,6 +521,7 @@ async fn dupes_apply(
         holders,
         blocked_rules: Vec::new(),
         manifest,
+        deleted_paths: Vec::new(),
     })
 }
 
@@ -813,6 +820,10 @@ async fn dev_apply(
         artifact_indexes
             .iter()
             .filter_map(|&i| dev.get(i).cloned())
+            // Blanked entries are folders already deleted in an earlier
+            // apply from this same scan; their indexes stay reserved so
+            // the remaining ones keep meaning what the UI thinks they mean.
+            .filter(|(p, _)| !p.is_empty())
             .collect()
     };
     if targets.is_empty() {
@@ -820,58 +831,83 @@ async fn dev_apply(
     }
 
     let app2 = app.clone();
-    let (requested, outcome, manifest) = tauri::async_runtime::spawn_blocking(move || {
-        // Artifact directories live in user space; the protected-root guard
-        // still applies (nothing under Windows/Program Files is ever touched).
-        let filtered: Vec<(String, u64)> = targets
-            .into_iter()
-            .filter(|(p, _)| deletion_allowed(Path::new(p), &[]))
-            .collect();
-        let total = filtered.len();
-        let mut manifest = ActionManifest::new();
-        let emit = |done: usize| {
-            let _ = app2.emit(
-                "apply-progress",
-                serde_json::json!({ "done": done, "total": total }),
-            );
-        };
-        let outcome = if permanent {
-            // Opt-in fast path: recycling a directory makes the shell touch
-            // every file inside it (~950 files/s under EDR), so a large
-            // node_modules selection takes minutes. remove_dir_all skips the
-            // Recycle Bin entirely; the manifest still records each folder.
-            delete_dirs_permanently(&filtered, &mut manifest, emit)
-        } else {
-            // One shell transaction per directory (they are few and huge)
-            // so progress ticks per folder instead of freezing until done.
-            let mut merged = clean_core::safety::ApplyOutcome {
-                deleted: 0,
-                bytes: 0,
-                failed: Vec::new(),
+    let (requested, outcome, manifest, deleted_paths) =
+        tauri::async_runtime::spawn_blocking(move || {
+            // Artifact directories live in user space; the protected-root guard
+            // still applies (nothing under Windows/Program Files is ever touched).
+            let filtered: Vec<(String, u64)> = targets
+                .into_iter()
+                .filter(|(p, _)| deletion_allowed(Path::new(p), &[]))
+                .collect();
+            let total = filtered.len();
+            let mut manifest = ActionManifest::new();
+            let emit = |done: usize| {
+                let _ = app2.emit(
+                    "apply-progress",
+                    serde_json::json!({ "done": done, "total": total }),
+                );
             };
-            for (done, item) in filtered.iter().enumerate() {
-                let one = recycle_files(std::slice::from_ref(item), &mut manifest, |_| {});
-                merged.deleted += one.deleted;
-                merged.bytes += one.bytes;
-                merged.failed.extend(one.failed);
-                emit(done + 1);
-            }
-            merged
-        };
-        let manifest_path = if manifest.actions.is_empty() {
-            None
-        } else {
-            manifest
-                .save(&manifest_dir())
-                .ok()
-                .map(|p| p.display().to_string())
-        };
-        (total, outcome, manifest_path)
-    })
-    .await
-    .map_err(|e| format!("apply task failed: {e}"))?;
+            let outcome = if permanent {
+                // Opt-in fast path: recycling a directory makes the shell touch
+                // every file inside it (~950 files/s under EDR), so a large
+                // node_modules selection takes minutes. remove_dir_all skips the
+                // Recycle Bin entirely; the manifest still records each folder.
+                delete_dirs_permanently(&filtered, &mut manifest, emit)
+            } else {
+                // One shell transaction per directory (they are few and huge)
+                // so progress ticks per folder instead of freezing until done.
+                let mut merged = clean_core::safety::ApplyOutcome {
+                    deleted: 0,
+                    bytes: 0,
+                    failed: Vec::new(),
+                };
+                for (done, item) in filtered.iter().enumerate() {
+                    let one = recycle_files(std::slice::from_ref(item), &mut manifest, |_| {});
+                    merged.deleted += one.deleted;
+                    merged.bytes += one.bytes;
+                    merged.failed.extend(one.failed);
+                    emit(done + 1);
+                }
+                merged
+            };
+            let manifest_path = if manifest.actions.is_empty() {
+                None
+            } else {
+                manifest
+                    .save(&manifest_dir())
+                    .ok()
+                    .map(|p| p.display().to_string())
+            };
+            // Everything we attempted minus everything that failed = what is
+            // actually gone from disk. The UI prunes exactly this set, so a
+            // locked folder can never silently vanish from the list.
+            let failed_set: std::collections::HashSet<&str> =
+                outcome.failed.iter().map(|(p, _)| p.as_str()).collect();
+            let deleted_paths: Vec<String> = filtered
+                .iter()
+                .map(|(p, _)| p.clone())
+                .filter(|p| !failed_set.contains(p.as_str()))
+                .collect();
+            (total, outcome, manifest_path, deleted_paths)
+        })
+        .await
+        .map_err(|e| format!("apply task failed: {e}"))?;
 
-    state.dev.lock().map_err(|_| "state lock poisoned")?.clear();
+    {
+        // Keep the index table alive so the user can delete more folders
+        // from the same scan without rescanning; blank only the entries
+        // that are gone from disk (positions must stay stable because the
+        // UI addresses artifacts by index).
+        let mut dev = state.dev.lock().map_err(|_| "state lock poisoned")?;
+        let gone: std::collections::HashSet<&str> =
+            deleted_paths.iter().map(|s| s.as_str()).collect();
+        for entry in dev.iter_mut() {
+            if gone.contains(entry.0.as_str()) {
+                entry.0.clear();
+                entry.1 = 0;
+            }
+        }
+    }
     let holders = failure_holders(&outcome.failed);
     Ok(ApplyDto {
         requested,
@@ -882,6 +918,7 @@ async fn dev_apply(
         holders,
         blocked_rules: Vec::new(),
         manifest,
+        deleted_paths,
     })
 }
 
