@@ -514,7 +514,13 @@ mod tests {
             .collect();
         dirty.push(dir.path().display().to_string());
         let (merged, live) = merge(dir.path(), &snap, &dirty);
-        assert_eq!(strip_atime(&merged), strip_atime(&snap));
+        // Compare against a fresh walk, not the snapshot: NTFS keeps a
+        // lazily-updated duplicate of timestamps in the parent directory
+        // index, so the very first walk after fixture creation can read a
+        // stale directory mtime that later walks see refreshed (flaked on
+        // the GitHub runner). merged and fresh are both post-first-walk.
+        let fresh = scan(dir.path(), &[]);
+        assert_eq!(strip_atime(&merged), strip_atime(&fresh));
         assert_eq!(live, 4, "root + 3 subdirs all enumerated live");
     }
 
