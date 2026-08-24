@@ -326,6 +326,15 @@ body {
 .row-val { font-family: var(--mono); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
 .row-wrap { display: flex; flex-direction: column; gap: 3px; }
 
+/* Panel donut charts: the row list below each chart is its detail view. */
+.pie-box { display: flex; justify-content: center; margin-bottom: 14px; }
+.pie-box:empty { display: none; }
+svg.pie { width: 148px; height: 148px; }
+svg.pie circle { transition: stroke-width .15s; }
+svg.pie circle:hover { stroke-width: 9; }
+.pchip { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
+.pchip.none { background: transparent; border: 1px solid var(--ink-3); opacity: .55; }
+
 /* ----------------------------------------------------------- applybar -- */
 .apply-bar {
   position: fixed; left: 216px; right: 0; bottom: 0;

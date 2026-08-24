@@ -597,15 +597,71 @@ function showFreshness(rep) {
   else el.textContent = t("an_fresh_full");
 }
 
+/* ---- panel pie charts ----
+   Hand-rolled SVG donuts (no chart library in this static UI). Each panel's
+   slices are that item's share of the analyzed root's total bytes; the grey
+   "Other" slice is whatever the top-N list doesn't cover. The row list below
+   each chart is its detail view: chip colors match slice colors. */
+
+const PIE_COLORS = [
+  "#10996e", "#2f7fd1", "#c98a2b", "#8a63c9", "#c95f5f",
+  "#3aa6a6", "#b0568f", "#6b8e23", "#5b7fa6", "#a67c52",
+  "#4f9e4f", "#7a6fc0", "#c97b4a", "#5aa0c9", "#95a53a",
+];
+const PIE_OTHER_COLOR = "#c9cfd4";
+
+// items: [{name, bytes}] in row order. Keeps a 1:1 index mapping with the
+// rows (zero-byte items become degenerate slices) so chips always line up.
+function pieSlices(items, totalBytes) {
+  const sum = items.reduce((a, it) => a + it.bytes, 0);
+  const total = Math.max(totalBytes, sum, 1);
+  const slices = items.map((it, i) => ({
+    name: it.name, bytes: it.bytes, frac: it.bytes / total,
+    color: PIE_COLORS[i % PIE_COLORS.length],
+  }));
+  const rest = total - sum;
+  if (rest > total * 0.001) {
+    slices.push({ name: t("pie_other"), bytes: rest, frac: rest / total, color: PIE_OTHER_COLOR });
+  }
+  return slices;
+}
+
+// r = 100/(2*pi): the circumference is exactly 100, so dasharray values are
+// percentages. Offset 25 puts the first slice's start at 12 o'clock; each
+// slice's offset then retreats by the preceding arcs to advance clockwise.
+function pieSvg(slices) {
+  const drawn = slices.filter((s) => s.frac > 0);
+  if (!drawn.length) return "";
+  let off = 25;
+  const circles = drawn.map((s) => {
+    const pct = s.frac * 100;
+    const c = '<circle r="15.9155" cx="21" cy="21" fill="transparent" stroke="' + s.color +
+      '" stroke-width="7" stroke-dasharray="' + pct.toFixed(3) + ' ' + (100 - pct).toFixed(3) +
+      '" stroke-dashoffset="' + off.toFixed(3) + '"><title>' +
+      esc(s.name) + " - " + esc(fmtBytes(s.bytes)) + " (" + pct.toFixed(1) + '%)</title></circle>';
+    off -= pct;
+    return c;
+  }).join("");
+  return '<svg class="pie" viewBox="0 0 42 42" role="img">' + circles + "</svg>";
+}
+
 /* Rows with a concrete path (full) are reveal targets: clicking opens the
    file manager with the item selected so the user can view or manually
-   delete it - the second layer of Analyze, which itself stays read-only. */
-function meterRow(name, bytes, maxBytes, extra, full) {
+   delete it - the second layer of Analyze, which itself stays read-only.
+   `chip` links a row to its pie slice: a color string paints a filled chip,
+   null paints a hollow one (item not charted: its bytes live inside another
+   slice), undefined renders no chip at all. */
+function meterRow(name, bytes, maxBytes, extra, full, chip) {
   const attrs = full
     ? ' reveal-row" data-path="' + esc(full)
     : "";
   const title = full ? full + "\n" + t("reveal_hint") : name;
-  return '<div class="row-wrap' + attrs + '"><div class="row-line">' +
+  const chipHtml = chip === undefined
+    ? ""
+    : chip
+      ? '<i class="pchip" style="background:' + chip + '"></i>'
+      : '<i class="pchip none"></i>';
+  return '<div class="row-wrap' + attrs + '"><div class="row-line">' + chipHtml +
     '<div class="row-name" title="' + esc(title) + '">' + esc(name) + '</div>' +
     (extra ? '<div class="row-val" style="color:var(--ink-3);font-weight:400">' + esc(extra) + '</div>' : "") +
     '<div class="row-val">' + esc(fmtBytes(bytes)) + '</div></div>' +
@@ -635,9 +691,36 @@ function renderAnalyze(rep) {
     (rep.skipped ? '<div class="sum-item"><div class="k">' + t("sum_unreadable") + '</div><div class="v">' + fmtCount(rep.skipped) + '</div></div>' : "");
 
   const maxF = Math.max(1, ...rep.top_files.map((f) => f.bytes));
-  $("an-files").innerHTML = rep.top_files.map((f) => meterRow(relToRoot(f.path, rep.root), f.bytes, maxF, null, f.path)).join("") || '<div class="hint">' + t("empty") + '</div>';
+  const fileSlices = pieSlices(rep.top_files.map((f) => ({ name: relToRoot(f.path, rep.root), bytes: f.bytes })), rep.total_bytes);
+  $("an-files-pie").innerHTML = pieSvg(fileSlices);
+  $("an-files").innerHTML = rep.top_files.map((f, i) => meterRow(relToRoot(f.path, rep.root), f.bytes, maxF, null, f.path, fileSlices[i].color)).join("") || '<div class="hint">' + t("empty") + '</div>';
+
+  // top_dirs is cumulative (a file counts toward every ancestor), so charting
+  // every listed dir would double-count nested ones. The pie keeps only dirs
+  // with no charted ancestor; skipped dirs get a hollow chip - their bytes
+  // already live inside a parent's slice.
+  const keptDirs = [];
+  const dirPie = new Map(); // top_dirs index -> kept-slice index
+  rep.top_dirs.forEach((d, i) => {
+    const norm = d.path.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase() + "\\";
+    if (!keptDirs.some((k) => norm.startsWith(k))) {
+      dirPie.set(i, keptDirs.length);
+      keptDirs.push(norm);
+    }
+  });
+  const dirSlices = pieSlices(
+    rep.top_dirs.filter((_, i) => dirPie.has(i)).map((d) => ({ name: relToRoot(d.path, rep.root), bytes: d.bytes })),
+    rep.total_bytes
+  );
+  $("an-dirs-pie").innerHTML = pieSvg(dirSlices);
   const maxD = Math.max(1, ...rep.top_dirs.map((d) => d.bytes));
-  $("an-dirs").innerHTML = rep.top_dirs.map((d) => meterRow(relToRoot(d.path, rep.root), d.bytes, maxD, filesLabel(d.files), d.path)).join("") || '<div class="hint">' + t("empty") + '</div>';
+  $("an-dirs").innerHTML = rep.top_dirs.map((d, i) =>
+    meterRow(relToRoot(d.path, rep.root), d.bytes, maxD, filesLabel(d.files), d.path,
+      dirPie.has(i) ? dirSlices[dirPie.get(i)].color : null)
+  ).join("") || '<div class="hint">' + t("empty") + '</div>';
+
+  const extSlices = pieSlices(rep.exts.map((x) => ({ name: "." + x.ext, bytes: x.bytes })), rep.total_bytes);
+  $("an-exts-pie").innerHTML = pieSvg(extSlices);
   const maxE = Math.max(1, ...rep.exts.map((x) => x.bytes));
   $("an-exts").innerHTML = rep.exts.map((x, i) => {
     const open = anOpenExt === x.ext;
@@ -645,6 +728,7 @@ function renderAnalyze(rep) {
     return '<div class="ext-group' + (open ? " open" : "") + '">' +
       '<div class="row-wrap ext-row" data-ext-i="' + i + '" title="' + esc(t("ext_click_hint")) + '"><div class="row-line">' +
       '<span class="caret"></span>' +
+      '<i class="pchip" style="background:' + extSlices[i].color + '"></i>' +
       '<div class="row-name">.' + esc(x.ext) + '</div>' +
       '<div class="row-val" style="color:var(--ink-3);font-weight:400">' + esc(filesLabel(x.count)) + '</div>' +
       '<div class="row-val">' + esc(fmtBytes(x.bytes)) + '</div></div>' +
@@ -670,8 +754,10 @@ function renderAnalyze(rep) {
       catch (err) { toast(String(err), true); }
     });
   });
+  const ageSlices = pieSlices(rep.ages.map((a) => ({ name: trAge(a.label), bytes: a.bytes })), rep.total_bytes);
+  $("an-ages-pie").innerHTML = pieSvg(ageSlices);
   const maxA = Math.max(1, ...rep.ages.map((a) => a.bytes));
-  $("an-ages").innerHTML = rep.ages.map((a) => meterRow(trAge(a.label), a.bytes, maxA, filesLabel(a.count))).join("");
+  $("an-ages").innerHTML = rep.ages.map((a, i) => meterRow(trAge(a.label), a.bytes, maxA, filesLabel(a.count), null, ageSlices[i].color)).join("");
   $("an-panels").hidden = false;
   showFreshness(rep);
 }
